@@ -147,12 +147,10 @@ secunzip open  docs.secunzip -u alice@example.com
 需要 Rust stable。
 
 ```
-cargo build --release
-cd server && cargo build --release
-cd gui    && cargo build --release
+cargo build --release --workspace      # 一次构建三个 crate
 ```
 
-产物：`target/release/secunzip`、`server/target/release/secunzip-server`、`gui/target/release/secunzip-gui`。
+产物：根目录 `target/release/` 下的 `secunzip`、`secunzip-server`、`secunzip-gui`（workspace 共用一份 target）。
 
 ## 命令
 

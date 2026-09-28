@@ -2,18 +2,17 @@
 
 ## 构建
 
-仓库有三个 crate，各自是独立的 Cargo 工程，没有顶层 workspace：
+仓库是一个 Cargo workspace，三个成员 crate 共用一份 `Cargo.lock` 与根目录的 `target/`：
 
-| 路径 | 产物 |
+| crate | 产物（都在根目录 `target/release/` 下） |
 |------|------|
-| 根目录 | `target/release/secunzip.exe`（核心库 + CLI） |
-| [server/](server/) | `server/target/release/secunzip-server.exe` |
-| [gui/](gui/) | `gui/target/release/secunzip-gui.exe` |
+| 根目录（核心库 + CLI） | `secunzip.exe` |
+| [server/](server/) | `secunzip-server.exe` |
+| [gui/](gui/) | `secunzip-gui.exe` |
 
 ```
-cargo build --release
-cd server && cargo build --release
-cd gui    && cargo build --release
+cargo build --release --workspace            # 一次构建全部
+cargo build --release -p secunzip-gui        # 只构建其中一个
 ```
 
 Windows 上使用 MinGW 工具链 `stable-x86_64-pc-windows-gnu`，`C:\msys64\mingw64\bin` 必须在 `PATH` 中：
@@ -30,9 +29,9 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 ## 测试
 
 ```
-cargo test                 # 核心库 + 集成测试，48 个
-cd server && cargo test
-cd gui    && cargo build
+cargo test --workspace           # 全部，73 个
+cargo test -p secunzip           # 仅核心库与 CLI，52 个
+cargo test -p secunzip-server    # 仅服务端，21 个
 ```
 
 用例分布与重点回归项见 [TESTING.md](TESTING.md)。改动加密、打包、密钥派生或服务端鉴权后，

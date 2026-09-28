@@ -56,24 +56,22 @@ git push origin v0.1.0
 需先安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)（提供 `iscc`）。
 
 ```bash
-cargo build --release
-cd server && cargo build --release && cd ..
-cd gui    && cargo build --release && cd ..
+cargo build --release --workspace
 
 iscc installer.iss          # 输出 output/SecUnzip-Setup.exe
 ```
 
-`installer.iss` 的 `[Files]` 读取这三个路径，构建完请确认它们存在：
+`installer.iss` 的 `[Files]` 读取下面这三个路径（workspace 共用根目录的 `target/`），构建完请确认它们存在：
 
 ```
-gui\target\release\secunzip-gui.exe
 target\release\secunzip.exe
-server\target\release\secunzip-server.exe
+target\release\secunzip-server.exe
+target\release\secunzip-gui.exe
 ```
 
 ## 发布前检查
 
-- [ ] `cargo test` 通过（48 项）
-- [ ] 三个 crate 均可 `cargo build --release`
+- [ ] `cargo test --workspace` 通过（73 项）
+- [ ] `cargo build --release --workspace` 成功
 - [ ] `installer.iss` 中的 `MyAppVersion` 与本次 tag 一致
 - [ ] 实机走一遍：安装 → 启动客户端 → 打包/打开 → 从「应用」里卸载，确认 `unins000.exe` 生效
