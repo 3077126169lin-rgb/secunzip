@@ -57,12 +57,18 @@ impl Hasher for Md5Hasher {
     }
 }
 
-pub fn create_hasher(algo: &HashAlgo) -> Box<dyn Hasher> {
+/// 根据算法枚举创建哈希器
+///
+/// 返回 Result 而不是 panic：`Hasher::hash` 的返回类型无法承载错误，
+/// 若在工厂里 `unimplemented!()`，选择 SM3 的用户只会看到进程崩溃。
+/// 不写 `_ =>` 兜底：新增变体时必须在此显式处理。
+pub fn create_hasher(algo: &HashAlgo) -> crate::Result<Box<dyn Hasher>> {
     match algo {
-        HashAlgo::Sha256 => Box::new(Sha256Hasher),
-        HashAlgo::Sha512 => Box::new(Sha512Hasher),
-        HashAlgo::Blake3 => Box::new(Blake3Hasher),
-        _ => unimplemented!("哈希算法 {:?} 尚未实现", algo),
+        HashAlgo::Sha256 => Ok(Box::new(Sha256Hasher)),
+        HashAlgo::Sha512 => Ok(Box::new(Sha512Hasher)),
+        HashAlgo::Blake3 => Ok(Box::new(Blake3Hasher)),
+        // TODO: 实现 SM3（国密哈希）
+        HashAlgo::Sm3 => Err(crate::SecUnzipError::Crypto("SM3 尚未实现".into())),
     }
 }
 
