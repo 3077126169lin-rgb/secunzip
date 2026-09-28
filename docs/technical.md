@@ -14,6 +14,7 @@
 | 发布构建优化 | [Cargo.toml](../Cargo.toml) `[profile.release]` | `opt-level=3`、`lto=true`、`codegen-units=1`、`strip=true` |
 | 功能开关 `runpe` | [Cargo.toml](../Cargo.toml) `[features]` | 内存 EXE 执行默认**不编译**，避免杀软误报；需显式 `--features runpe` |
 | 控制台子系统 | [gui/src/main.rs](../gui/src/main.rs) | `#![cfg_attr(windows, windows_subsystem = "windows")]`，启动不弹控制台；`--register/--unregister` 用 `AttachConsole(ATTACH_PARENT_PROCESS)` 接回父终端输出 |
+| 应用图标 | [build.rs](../build.rs)、[assets/icon.ico](../assets/icon.ico) | 编译期把图标作为 Windows 资源嵌入 exe：`build.rs` 只调用工具链自带的 `windres`（GNU 目标）或 `rc`（MSVC 目标），不引入额外 crate；找不到工具时只告警不中断构建。安装包另用 `IconFilename` 指向装好的 `.ico` |
 | MSRV | 依赖声明 | 服务端 ≥ 1.71（tokio）、CLI ≥ 1.74（clap）、含 GUI 全量 ≥ 1.76（egui/eframe） |
 
 ## 2. 内容封装格式

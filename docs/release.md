@@ -18,6 +18,7 @@
 4. 可选注册 `.secunzip` 文件关联（写 `HKCU`，不碰系统级设置）
 5. 安装完成后执行一次 `secunzip-gui.exe --register` 刷新关联
 6. **不安装任何依赖** —— 打包的二进制不需要 VC++ 运行库，也不依赖系统 libsqlite3
+7. 图标：安装包自身、开始菜单与桌面快捷方式、以及安装目录下的 `assets\icon.ico` 共用同一套图标（由 [assets/icon.ico](../assets/icon.ico) 提供，三个 exe 内也已嵌入同一图标，见 [build.rs](../build.rs)）
 
 ## 卸载
 

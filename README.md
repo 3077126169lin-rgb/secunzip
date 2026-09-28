@@ -39,6 +39,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [ATTRIBUTION.md](ATTRIBUTION.md) | 技术与第三方组件归属声明 |
 | [installer.iss](installer.iss) | Inno Setup 6 安装包脚本，产出 `SecUnzip-Setup.exe`（含卸载程序） |
 | [.github/workflows/release.yml](.github/workflows/release.yml) | 推 `v*` tag 时自动构建安装包并挂到 Release |
+| [build.rs](build.rs) | 把 `assets/icon.ico` 嵌入可执行文件（三个 crate 各一份，仅用工具链自带的 `windres`/`rc`） |
 
 **核心库与 CLI（`src/`）**
 
@@ -101,6 +102,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | 文件 | 说明 |
 |------|------|
 | [assets/README.md](assets/README.md) | 资源目录说明 |
+| [assets/icon.ico](assets/icon.ico) | 应用图标（16–256 多尺寸，蓝底白锁），由 `build.rs` 嵌入 exe，安装包快捷方式亦指向它 |
 | [assets/runtime_stub.exe](assets/runtime_stub.exe) | 打包黑盒 EXE 时的编译期占位回退（11 字节，必须存在） |
 | [testdata/hello.txt](testdata/hello.txt)、[testdata/readme.md](testdata/readme.md) | 示例数据（测试当前自建临时文件，未引用此目录） |
 | [tests/crypto_test.rs](tests/crypto_test.rs) | 加密往返、GCM 篡改检测、哈希与 KDF |

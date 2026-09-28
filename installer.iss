@@ -24,8 +24,8 @@ DefaultGroupName={#MyAppName}
 ; 放到输出目录（deploy\output）
 OutputDir=output
 OutputBaseFilename=SecUnzip-Setup
-; 安装包图标（可选，无则用默认）
-; SetupIconFile=assets\icon.ico
+; 安装包自身图标
+SetupIconFile=assets\icon.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -58,13 +58,15 @@ Source: "deploy\*"; DestDir: "{app}\deploy"; Flags: ignoreversion recursesubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ATTRIBUTION.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\README.md"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\启动服务端"; Filename: "{app}\secunzip-server.exe"
+; 用 IconFilename 直接指向装好的 .ico：即便 exe 内的图标资源因故缺失，快捷方式也照常有图标
+Name: "{group}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"
+Name: "{group}\启动服务端"; Filename: "{app}\secunzip-server.exe"; IconFilename: "{app}\assets\icon.ico"
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{group}\归属声明与第三方许可"; Filename: "{app}\ATTRIBUTION.md"
-Name: "{autodesktop}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Registry]
 ; .secunzip 文件关联（当前用户，卸载时清理）
