@@ -70,7 +70,14 @@ impl PackHeader {
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        if data.len() < 8 {
+        // 固定前缀：magic(8) + version(2) + format(1) + config_len(4)
+        const PREFIX_LEN: usize = 15;
+        // 配置之后的固定尾字段：data_offset(8) + data_size(8) + original_size(8) + hash_len(4)
+        const TAIL_LEN: usize = 28;
+
+        // 这是解析不可信输入的入口：每一步切片前都要先验证长度，
+        // config_len 与 hash_len 都来自文件内容，必须用 checked_add 防溢出、再比长度。
+        if data.len() < PREFIX_LEN {
             return Err(crate::SecUnzipError::Format("头部数据太短".into()));
         }
 
@@ -87,21 +94,32 @@ impl PackHeader {
         };
 
         let config_len = u32::from_le_bytes(data[11..15].try_into().unwrap()) as usize;
-        if data.len() < 15 + config_len + 32 {
+        let offset = PREFIX_LEN
+            .checked_add(config_len)
+            .ok_or_else(|| crate::SecUnzipError::Format("头部长度溢出".into()))?;
+        let tail_start = offset
+            .checked_add(TAIL_LEN)
+            .ok_or_else(|| crate::SecUnzipError::Format("头部长度溢出".into()))?;
+        if data.len() < tail_start {
             return Err(crate::SecUnzipError::Format("头部数据不完整".into()));
         }
 
-        let config: PackConfig = bincode::deserialize(&data[15..15 + config_len])
+        let config: PackConfig = bincode::deserialize(&data[PREFIX_LEN..offset])
             .map_err(|e| crate::SecUnzipError::Format(format!("反序列化配置失败: {}", e)))?;
 
-        let offset = 15 + config_len;
         let data_offset = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
         let data_size = u64::from_le_bytes(data[offset + 8..offset + 16].try_into().unwrap());
         let original_size = u64::from_le_bytes(data[offset + 16..offset + 24].try_into().unwrap());
 
         let hash_len =
             u32::from_le_bytes(data[offset + 24..offset + 28].try_into().unwrap()) as usize;
-        let integrity_hash = data[offset + 28..offset + 28 + hash_len].to_vec();
+        let hash_end = tail_start
+            .checked_add(hash_len)
+            .ok_or_else(|| crate::SecUnzipError::Format("完整性校验长度溢出".into()))?;
+        if data.len() < hash_end {
+            return Err(crate::SecUnzipError::Format("完整性校验字段不完整".into()));
+        }
+        let integrity_hash = data[tail_start..hash_end].to_vec();
 
         Ok(Self {
             magic,
