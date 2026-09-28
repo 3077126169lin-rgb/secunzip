@@ -49,7 +49,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-> 该工作流**尚未实跑验证**（只有打 tag 才会触发）。首次使用时留意 Actions 日志；若 MinGW 或 Inno Setup 的安装步骤有变动，按日志调整。
+> 该工作流已在 `v0.1.0` 至 `v0.1.3` 上实际运行过，每个版本产出 4 个产物。两个 job 的耗时差异明显：
+> Linux 服务端约 2 分钟，Windows 安装包约 15 至 20 分钟（含 `choco install innosetup`），
+> 因此打 tag 后发布页上的产物会陆续出现，而不是一次到位。
 
 ### 方式二：本地手动构建
 

@@ -74,7 +74,7 @@
 | 认证模式 `AuthMode` | [src/core/types.rs](../src/core/types.rs) | 只有 `Remote(服务端URL)` 可用：`open` 遇到 `AuthMode::Local` 直接报错「本地模式不支持」（`src/cli/commands.rs:214-216`），GUI 也不产生 Local 文件 |
 | 授权有效期 | [server/src/main.rs](../server/src/main.rs) `parse_expire` | 实际生效的只有**服务端 grant** 的 `expires_at`：永久 / `Nd`（N 天后）/ `YYYYMMDD`；过期在被取钥时拒绝并删除该授权（`server/src/main.rs:446-471`）。**文件头 `expire_at` 未生效**：生产打包恒写 `None`（`src/cli/commands.rs:58`），`src/runtime/loader.rs:64,93,166` 的检查永不触发 |
 | content_key 与环境无关 | [src/runtime/loader.rs](../src/runtime/loader.rs) `extract_with_key` | 打开时服务端下发打包时确定的 `content_key` 字符串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥（`loader.rs:101-104`），不读取接收方的机器码 / 日期 / IP / 用户名 |
-| 密钥派生时机 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) `generate_key_from_flow` | KeyNode 树只在**打包机器上求值一次**（`gui/src/app.rs:377`、`src/cli/commands.rs:42-44`），结果转成十六进制串即 `content_key` 并托管到服务端 |
+| 密钥派生时机 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) `generate_key_from_flow` | KeyNode 树只在**打包机器上求值一次**（只有 GUI 会构造流程树：`gui/src/app.rs:377`；CLI 直接写死 `Literal` 字面量节点，`src/cli/commands.rs:55`），结果转成十六进制串即 `content_key` 并托管到服务端 |
 | 临时申请 + 审批 | [server/src/main.rs](../server/src/main.rs) `/api/request`、`/api/approve`、`/api/deny` | 打包时 `allow_temp` 决定是否开放；同一用户已有 pending 时去重 |
 | 管理操作凭据 | `.secret` 文件 / `SECUNZIP_SECRET` | `grant`/`revoke`/`approve`/`deny`/`requests`/`logs` 均需该文件的 secret |
 | 默认不落盘 | [src/runtime/vfs.rs](../src/runtime/vfs.rs) | 降低顺手复制 |

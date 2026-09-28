@@ -52,9 +52,12 @@ data_offset、data_size、original_size、integrity_hash。
 - 文件ID = 产物内容的 MD5（内容寻址），**不写入文件头**，打开时由客户端重算
 - `content_key` 不写入文件头，仅由服务端托管
 - Remote 模式下文件头中的 key_derive 字段被清空
-- `content_key` 是**打包时一次性确定的固定字符串**。打包界面的密钥流程选项（机器码 / 用户名 / 日期等）只在**打包机器上求值一次**
-  （`gui/src/app.rs` `generate_key_from_flow`、`src/cli/commands.rs:42-44`），求值结果转成十六进制串即 `content_key`，交给服务端托管；
-  打开时服务端原样下发该串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥（`src/runtime/loader.rs:101-104`）。
+- `content_key` 是**打包时一次性确定的固定字符串**。密钥流程树只在**打包机器上求值一次**，而且只有 GUI 会构造它
+  （`gui/src/app.rs` 的 `generate_key_from_flow`，`app.rs:377`）；CLI 根本没有流程树，直接写死
+  `KeyNode::Input(KeySource::Literal(随机生成的密钥串))`（`src/cli/commands.rs:42-44` 生成的是随机 UUID，
+  `commands.rs:55` 把它包成字面量节点）。求值结果转成十六进制串即 `content_key`，交给服务端托管；
+  打开时服务端原样下发该串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥
+  （`src/runtime/loader.rs:101-104`）。
   **打开阶段不读取接收方的机器码、日期、IP 或用户名**，这些选项不构成对接收方环境的绑定，只决定打包时生成的密钥串本身。
 - 头部 `PackConfig` 里的 `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 会照原样序列化写入，但当前没有任何代码读取：
   `ip_whitelist` 从不校验；`hash` 不影响完整性校验（恒为 SHA-256，`src/packer/builder.rs:66`）；`run_mode` 不参与分支（见 §3.3）；

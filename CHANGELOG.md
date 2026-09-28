@@ -55,7 +55,7 @@
 - 三个 crate 合并为一个 Cargo workspace，共用一份 `Cargo.lock` 与 `target/`，
   公共依赖只编译一次；根目录的 `[profile.release]`（LTO、strip）因此对三个成员统一生效，
   产物明显变小。
-- 移除 12 个声明了但源码零引用的依赖。
+- 移除 10 个声明了但源码零引用的依赖（核心库 4、服务端 2、图形界面 4）。
 - 运行模式、挂载方式、`execute_sandbox` 等注释与文档改为如实描述实现状况，
   不再声称未实现的能力。
 
@@ -64,7 +64,7 @@
 - `GET /healthz` 存活探针，不访问数据库、无需鉴权。
 - CI：每次推送与 PR 执行 `cargo fmt --all --check`、`cargo clippy --workspace -D warnings`
   与全部测试；发布流程增加 Linux 服务端产物（静态链接 musl）。
-- 测试从 48 个增至 82 个：新增服务端黑盒集成测试 22 个（鉴权、注册防覆盖、多应用隔离、
+- 测试从 73 个增至 82 个：新增服务端黑盒集成测试 22 个（鉴权、注册防覆盖、多应用隔离、
   迁移与审计保留、备份、启动失败路径、健康检查）、解析健壮性测试 4 个、盘符选择与卸载安全测试 8 个。
 - 工程文件：`.gitattributes`、`rustfmt.toml`、`.editorconfig`、`CONTRIBUTING.md`、`SECURITY.md`、
   `CODE_OF_CONDUCT.md`、`CHANGELOG.md`、issue 与 PR 模板、`DISCLAIMER.txt`（安装包首屏强制阅读）。
