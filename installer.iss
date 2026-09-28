@@ -58,9 +58,10 @@ Name: "fileassoc"; Description: "注册 .secunzip 文件关联（双击即可打
 
 [Files]
 ; 三个可执行文件
-Source: "gui\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; workspace 共用根目录的 target/release/
+Source: "target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "target\release\secunzip.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "server\target\release\secunzip-server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "target\release\secunzip-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 部署脚本与文档
 Source: "deploy\*"; DestDir: "{app}\deploy"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion

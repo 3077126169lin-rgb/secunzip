@@ -20,24 +20,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+
       # 静态链接 CRT：产物不依赖 VC++ Redistributable，
       # 与本地 MinGW 构建产物的"零运行库依赖"特性一致
-      - name: 构建核心库与 CLI
+      - name: 构建三个 crate
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release
-
-      - name: 构建服务端
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release
-        working-directory: server
-
-      - name: 构建图形客户端
-        env:
-          RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build --release
-        working-directory: gui
+        run: cargo build --release --workspace
 
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
@@ -57,5 +47,5 @@ jobs:
           files: |
             output/SecUnzip-Setup.exe
             target/release/secunzip.exe
-            server/target/release/secunzip-server.exe
+            target/release/secunzip-server.exe
           generate_release_notes: true

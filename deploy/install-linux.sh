@@ -67,7 +67,7 @@ echo -e "  编译完成"
 echo -e "${YELLOW}[4/5] 创建部署目录...${NC}"
 DEPLOY_DIR="$PROJECT_ROOT/deploy/server"
 mkdir -p "$DEPLOY_DIR"
-cp "$PROJECT_ROOT/server/target/release/secunzip-server" "$DEPLOY_DIR/"
+cp "$PROJECT_ROOT/target/release/secunzip-server" "$DEPLOY_DIR/"
 cd "$DEPLOY_DIR"
 echo -e "  部署目录: $DEPLOY_DIR"
 

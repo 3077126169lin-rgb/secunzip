@@ -52,7 +52,7 @@ Write-Host "  编译完成" -ForegroundColor Green
 Write-Host "[4/5] 创建部署目录..." -ForegroundColor Yellow
 $deployDir = "$projectRoot\deploy\server"
 New-Item -ItemType Directory -Path $deployDir -Force | Out-Null
-Copy-Item "$projectRoot\server\target\release\secunzip-server.exe" $deployDir -Force
+Copy-Item "$projectRoot\target\release\secunzip-server.exe" $deployDir -Force
 Set-Location $deployDir
 Write-Host "  部署目录: $deployDir" -ForegroundColor Green
 

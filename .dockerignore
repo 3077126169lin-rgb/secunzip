@@ -1,0 +1,9 @@
+# Docker 构建上下文不需要这些
+target/
+output/
+.git/
+.github/
+docs/images/
+*.db
+*.secret
+*.secunzip
