@@ -38,9 +38,9 @@
   - Windows 安装包（Inno Setup 6，按用户安装，不需要管理员，自带卸载程序，首屏强制阅读免责声明）
   - 推 `v*` tag 触发的发布工作流；提交与 PR 触发的 [CI](.github/workflows/ci.yml)（格式检查、clippy、全部测试）
   - 一键部署脚本（NSSM / systemd）与 Docker
-- 69 个测试：`src/**` 单元测试 19、[tests/crypto_test.rs](tests/crypto_test.rs) 10、
+- 73 个测试：`src/**` 单元测试 19、[tests/crypto_test.rs](tests/crypto_test.rs) 10、
   [tests/key_derive_test.rs](tests/key_derive_test.rs) 10、[tests/packer_test.rs](tests/packer_test.rs) 6、
-  [tests/security_test.rs](tests/security_test.rs) 3、
+  [tests/security_test.rs](tests/security_test.rs) 3、[tests/robustness_test.rs](tests/robustness_test.rs) 4、
   [server/tests/api_test.rs](server/tests/api_test.rs) 21
 - 文档：本文件、[README.md](README.md)、[API.md](API.md)、[TESTING.md](TESTING.md)、
   [SECURITY.md](SECURITY.md)、[CONTRIBUTING.md](CONTRIBUTING.md)、[DISCLAIMER.txt](DISCLAIMER.txt)，
@@ -48,6 +48,8 @@
 
 ### 安全
 
+- 产物头部解析此前会按文件内的长度字段直接切片，遇到被截断或伪造 length 的产物会 panic；
+  现在所有切片前都先校验长度并用 `checked_add` 防溢出，非法输入一律返回错误
 - 这是学生项目，未做安全审计与渗透测试；README、[SECURITY.md](SECURITY.md) 与安装包首屏均声明该点，
   并建议仅在沙盒环境试用
 - `content_key` 不写入产物，仅由服务端托管；Remote 模式下文件头中的 `key_derive` 字段被清空

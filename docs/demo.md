@@ -48,6 +48,9 @@
    printf 'id,name\n1,alpha\n' > 项目资料/数据.csv
    ```
 
+   仓库里已有现成样本 [testdata/](../testdata/)，想省掉这一步可以直接把下面的
+   `./项目资料` 换成 `./testdata`。
+
 2. 打包并注册到服务端（`--allow-temp` 表示允许对方自助申请临时权限）：
 
    ```bash

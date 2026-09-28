@@ -31,7 +31,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [server/](server/) | 授权服务端（Axum + SQLite），全部逻辑在 [src/main.rs](server/src/main.rs) |
 | [gui/](gui/) | 图形客户端（egui）：[theme.rs](gui/src/theme.rs) 设计系统、[icons.rs](gui/src/icons.rs) 手搓矢量图标、[model.rs](gui/src/model.rs) 状态与持久化、[monitor.rs](gui/src/monitor.rs) 后台监控、[views/](gui/src/views/) 各页面、[app.rs](gui/src/app.rs) 业务逻辑、[api.rs](gui/src/api.rs) HTTP 调用 |
 | [tests/](tests/) | 集成测试 |
-| [testdata/](testdata/) | 示例数据（测试当前自建临时文件，此目录未被引用） |
+| [testdata/](testdata/) | 手工试用用的示例数据（见 [docs/demo.md](docs/demo.md)；自动化测试自建临时文件） |
 | [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)，截图在 [docs/images/](docs/images/) |
 | [.github/](.github/) | [ci.yml](.github/workflows/ci.yml) 在提交与 PR 时跑格式检查、clippy 与测试；[release.yml](.github/workflows/release.yml) 打 tag 时产出并发布安装包 |
 | [deploy/](deploy/) | 部署脚本与 Docker，见 [deploy/README.md](deploy/README.md) |
@@ -129,7 +129,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [assets/README.md](assets/README.md) | 资源目录说明 |
 | [assets/icon.ico](assets/icon.ico) | 应用图标（16–256 多尺寸，蓝底白锁），由 `build.rs` 嵌入 exe，安装包快捷方式亦指向它 |
 | [assets/runtime_stub.exe](assets/runtime_stub.exe) | 打包黑盒 EXE 时的编译期占位回退（11 字节，必须存在） |
-| [testdata/hello.txt](testdata/hello.txt)、[testdata/readme.md](testdata/readme.md) | 示例数据（测试当前自建临时文件，未引用此目录） |
+| [testdata/hello.txt](testdata/hello.txt)、[testdata/readme.md](testdata/readme.md) | 手工试用用的示例数据，可直接 `secunzip pack ./testdata -o t.secunzip` |
 | [tests/crypto_test.rs](tests/crypto_test.rs) | 加密往返、GCM 篡改检测、哈希与 KDF |
 | [tests/key_derive_test.rs](tests/key_derive_test.rs) | 派生流程节点求值与确定性 |
 | [tests/packer_test.rs](tests/packer_test.rs) | 打包/解包往返、有效期、错密钥、info |
@@ -269,7 +269,7 @@ CLI 与 GUI 中含有 `#[cfg(not(windows))]` 分支，可编译到非 Windows �
 ## 测试
 
 ```
-cargo test                      # 核心库与 CLI：48 个
+cargo test                      # 核心库与 CLI：52 个
 cd server && cargo test         # 服务端：21 个，真实拉起进程打 HTTP 接口
 ```
 
