@@ -1,8 +1,8 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use crate::core::{KeyNode, KeyTransform, Condition};
-use crate::crypto::hash::create_hasher;
 use super::sources::{get_source_data, ip_in_cidr};
+use crate::core::{Condition, KeyNode, KeyTransform};
+use crate::crypto::hash::create_hasher;
 use crate::Result;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 /// 密钥派生引擎
 pub struct KeyDeriveEngine {
@@ -18,12 +18,10 @@ impl KeyDeriveEngine {
     /// 执行密钥派生
     pub fn derive(&self, node: &KeyNode) -> Result<Vec<u8>> {
         let material = self.eval_node(node)?;
-        
+
         // 使用 PBKDF2 将派生材料扩展为固定长度密钥
         Ok(crate::crypto::keywrap::derive_key_material(
-            &material,
-            &self.salt,
-            32,  // 256 bits
+            &material, &self.salt, 32, // 256 bits
         ))
     }
 
@@ -31,20 +29,24 @@ impl KeyDeriveEngine {
     fn eval_node(&self, node: &KeyNode) -> Result<Vec<u8>> {
         match node {
             KeyNode::Input(source) => get_source_data(source),
-            
+
             KeyNode::Transform(transform, inner) => {
                 let data = self.eval_node(inner)?;
                 self.apply_transform(transform, data)
             }
-            
-            KeyNode::Conditional { condition, then_branch, else_branch } => {
+
+            KeyNode::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 if self.eval_condition(condition)? {
                     self.eval_node(then_branch)
                 } else {
                     self.eval_node(else_branch)
                 }
             }
-            
+
             KeyNode::Concat(nodes) => {
                 let mut result = Vec::new();
                 for node in nodes {
@@ -63,33 +65,30 @@ impl KeyDeriveEngine {
                 let hasher = create_hasher(algo);
                 Ok(hasher.hash(&data))
             }
-            
+
             KeyTransform::TakeFirst(n) => {
                 let n = (*n).min(data.len());
                 Ok(data[..n].to_vec())
             }
-            
+
             KeyTransform::TakeLast(n) => {
                 let n = (*n).min(data.len());
                 Ok(data[data.len() - n..].to_vec())
             }
-            
+
             KeyTransform::AddSalt(salt) => {
                 let mut result = data;
                 result.extend_from_slice(salt);
                 Ok(result)
             }
-            
-            KeyTransform::Concat => Ok(data),  // Concat 在上层处理
-            
-            KeyTransform::Base64Encode => {
-                Ok(BASE64.encode(&data).into_bytes())
-            }
-            
-            KeyTransform::Base64Decode => {
-                BASE64.decode(&data)
-                    .map_err(|e| crate::SecUnzipError::KeyDerivation(format!("Base64解码失败: {}", e)))
-            }
+
+            KeyTransform::Concat => Ok(data), // Concat 在上层处理
+
+            KeyTransform::Base64Encode => Ok(BASE64.encode(&data).into_bytes()),
+
+            KeyTransform::Base64Decode => BASE64
+                .decode(&data)
+                .map_err(|e| crate::SecUnzipError::KeyDerivation(format!("Base64解码失败: {}", e))),
         }
     }
 
@@ -97,17 +96,17 @@ impl KeyDeriveEngine {
     fn eval_condition(&self, condition: &Condition) -> Result<bool> {
         match condition {
             Condition::IpInRange(ip, cidr) => ip_in_cidr(ip, cidr),
-            
+
             Condition::DateBefore(date_str) => {
                 let current = chrono::Local::now().format("%Y%m%d").to_string();
                 Ok(current <= *date_str)
             }
-            
+
             Condition::DateAfter(date_str) => {
                 let current = chrono::Local::now().format("%Y%m%d").to_string();
                 Ok(current >= *date_str)
             }
-            
+
             Condition::AlwaysTrue => Ok(true),
             Condition::AlwaysFalse => Ok(false),
         }
@@ -132,7 +131,7 @@ pub fn generate_key_from_flow(node: &KeyNode) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{KeyNode, KeySource, KeyTransform, HashAlgo};
+    use crate::core::{HashAlgo, KeyNode, KeySource, KeyTransform};
 
     #[test]
     fn flow_key_deterministic() {

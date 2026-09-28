@@ -1,8 +1,11 @@
-use std::path::{Path, PathBuf};
-use crate::core::{PackConfig, KeyNode, KeySource, RunMode, AuthMode, OutputFormat, CompressAlgo, CryptoAlgo, HashAlgo};
+use crate::core::{
+    AuthMode, CompressAlgo, CryptoAlgo, HashAlgo, KeyNode, KeySource, OutputFormat, PackConfig,
+    RunMode,
+};
 use crate::packer::PackBuilder;
 use crate::runtime::RuntimeLoader;
 use crate::Result;
+use std::path::{Path, PathBuf};
 
 /// 打包命令
 /// 打包结果（供 CLI 与 GUI 共用）
@@ -17,20 +20,35 @@ pub struct PackOutcome {
 
 /// 执行打包：生成/采用密钥 → 加密打包 → 注册服务端（托管 content_key）→ 保存管理密钥
 /// custom_key：管理员自定义密钥（留空则随机生成）
-pub fn pack_file(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_temp: bool, custom_key: Option<String>, blackbox: bool) -> Result<PackOutcome> {
+pub fn pack_file(
+    sources: Vec<PathBuf>,
+    output: PathBuf,
+    server: String,
+    allow_temp: bool,
+    custom_key: Option<String>,
+    blackbox: bool,
+) -> Result<PackOutcome> {
     for source in &sources {
         if !source.exists() {
-            return Err(crate::SecUnzipError::Packing(format!("路径不存在: {}", source.display())));
+            return Err(crate::SecUnzipError::Packing(format!(
+                "路径不存在: {}",
+                source.display()
+            )));
         }
     }
 
     let secret = uuid::Uuid::new_v4().to_string();
     // content_key：文件加密密钥，只交给服务端托管，服务端仅向授权用户下发
-    let content_key = custom_key.filter(|s| !s.trim().is_empty())
+    let content_key = custom_key
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string());
 
     let config = PackConfig {
-        format: if blackbox { OutputFormat::Exe } else { OutputFormat::SecUnzip },
+        format: if blackbox {
+            OutputFormat::Exe
+        } else {
+            OutputFormat::SecUnzip
+        },
         compress: CompressAlgo::Zip,
         crypto: CryptoAlgo::Aes256Gcm,
         hash: HashAlgo::Sha256,
@@ -52,27 +70,44 @@ pub fn pack_file(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_t
 
     // 注册到服务器（文件ID=MD5，托管 content_key）
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let registered = rt.block_on(async {
-        register_app(&server, &app_id, &secret, &content_key, allow_temp).await
-    }).is_ok();
+    let registered = rt
+        .block_on(async { register_app(&server, &app_id, &secret, &content_key, allow_temp).await })
+        .is_ok();
 
     if !registered {
         // 注册失败 → 清理产物，绝不留下无法联网打开的「死文件」
         let _ = std::fs::remove_file(&output);
         return Err(crate::SecUnzipError::Packing(
-            "注册服务端失败，已清理打包产物（不留无法打开的死文件）。请检查服务端地址/网络后重试".into(),
+            "注册服务端失败，已清理打包产物（不留无法打开的死文件）。请检查服务端地址/网络后重试"
+                .into(),
         ));
     }
 
     // 保存 secret 到本地文件
     save_secret(&output, &secret)?;
 
-    Ok(PackOutcome { app_id, secret, registered })
+    Ok(PackOutcome {
+        app_id,
+        secret,
+        registered,
+    })
 }
 
 /// 打包命令（CLI，打印结果）
-pub fn cmd_pack(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_temp: bool) -> Result<()> {
-    let out = pack_file(sources, output.clone(), server.clone(), allow_temp, None, false)?;
+pub fn cmd_pack(
+    sources: Vec<PathBuf>,
+    output: PathBuf,
+    server: String,
+    allow_temp: bool,
+) -> Result<()> {
+    let out = pack_file(
+        sources,
+        output.clone(),
+        server.clone(),
+        allow_temp,
+        None,
+        false,
+    )?;
 
     println!();
     println!("═══════════════════════════════════════════════════════════");
@@ -91,10 +126,16 @@ pub fn cmd_pack(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_te
     }
     println!();
     println!("授权用户:");
-    println!("secunzip grant {} --user <用户ID> [--expires 7d]", output.display());
+    println!(
+        "secunzip grant {} --user <用户ID> [--expires 7d]",
+        output.display()
+    );
     println!();
     println!("用户申请:");
-    println!("secunzip request {} --user <用户ID> --days 3", output.display());
+    println!(
+        "secunzip request {} --user <用户ID> --days 3",
+        output.display()
+    );
     println!();
     println!("查看申请:");
     println!("secunzip requests {}", output.display());
@@ -116,9 +157,7 @@ pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<
             let app_id = get_app_id(&file)?;
 
             let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(async {
-                request_key(server, &app_id, &user).await
-            });
+            let result = rt.block_on(async { request_key(server, &app_id, &user).await });
 
             match result {
                 Ok(key) => {
@@ -136,7 +175,9 @@ pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<
                             std::fs::create_dir_all(&dest)?;
                             for (name, content) in files {
                                 let p = dest.join(&name);
-                                if let Some(parent) = p.parent() { std::fs::create_dir_all(parent)?; }
+                                if let Some(parent) = p.parent() {
+                                    std::fs::create_dir_all(parent)?;
+                                }
                                 std::fs::write(p, content)?;
                             }
                             println!("解压完成: {}", dest.display());
@@ -146,7 +187,11 @@ pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<
                             let vfs = loader.mount_vfs_with_key(&key)?;
                             println!();
                             println!("═══════════════════════════════════════════════════════════");
-                            println!("内存挂载（只读，未落盘）  文件数: {}  大小: {}", vfs.file_count(), human_size(vfs.total_size()));
+                            println!(
+                                "内存挂载（只读，未落盘）  文件数: {}  大小: {}",
+                                vfs.file_count(),
+                                human_size(vfs.total_size())
+                            );
                             println!("═══════════════════════════════════════════════════════════");
                             print_tree(&vfs, "", "");
                             println!("═══════════════════════════════════════════════════════════");
@@ -157,7 +202,11 @@ pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<
                 Err(e) => {
                     println!("{}", e);
                     println!("提示: 如果没有权限，可以申请临时权限:");
-                    println!("secunzip request {} --user {} --days 3", file.display(), user);
+                    println!(
+                        "secunzip request {} --user {} --days 3",
+                        file.display(),
+                        user
+                    );
                     return Err(crate::SecUnzipError::Other(e));
                 }
             }
@@ -180,16 +229,26 @@ fn print_tree(vfs: &crate::runtime::VirtualFS, dir: &str, prefix: &str) {
             let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
             print_tree(vfs, &entry.path, &child_prefix);
         } else {
-            println!("{}{} {}  ({})", prefix, branch, entry.name, human_size(entry.size));
+            println!(
+                "{}{} {}  ({})",
+                prefix,
+                branch,
+                entry.name,
+                human_size(entry.size)
+            );
         }
     }
 }
 
 /// 人类可读大小
 fn human_size(size: usize) -> String {
-    if size < 1024 { format!("{} B", size) }
-    else if size < 1024 * 1024 { format!("{:.1} KB", size as f64 / 1024.0) }
-    else { format!("{:.1} MB", size as f64 / (1024.0 * 1024.0)) }
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
 }
 
 /// 授权命令
@@ -201,9 +260,8 @@ pub fn cmd_grant(file: PathBuf, user: String, expires: Option<String>) -> Result
     println!("授权用户 {}...", user);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        grant_user(&server, &app_id, &secret, &user, expires.as_deref()).await
-    });
+    let result = rt
+        .block_on(async { grant_user(&server, &app_id, &secret, &user, expires.as_deref()).await });
 
     match result {
         Ok(msg) => println!("{}", msg),
@@ -221,9 +279,7 @@ pub fn cmd_revoke(file: PathBuf, user: String) -> Result<()> {
     println!("吊销用户 {}...", user);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        revoke_user(&server, &app_id, &secret, &user).await
-    });
+    let result = rt.block_on(async { revoke_user(&server, &app_id, &secret, &user).await });
 
     match result {
         Ok(msg) => println!("{}", msg),
@@ -233,16 +289,20 @@ pub fn cmd_revoke(file: PathBuf, user: String) -> Result<()> {
 }
 
 /// 申请临时权限
-pub fn cmd_request(file: PathBuf, user: String, days: Option<i32>, message: Option<String>) -> Result<()> {
+pub fn cmd_request(
+    file: PathBuf,
+    user: String,
+    days: Option<i32>,
+    message: Option<String>,
+) -> Result<()> {
     let app_id = get_app_id(&file)?;
     let server = get_server(&file)?;
 
     println!("申请临时权限...");
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        request_access(&server, &app_id, &user, days, message).await
-    });
+    let result =
+        rt.block_on(async { request_access(&server, &app_id, &user, days, message).await });
 
     match result {
         Ok(msg) => println!("{}", msg),
@@ -258,9 +318,7 @@ pub fn cmd_requests(file: PathBuf) -> Result<()> {
     let server = get_server(&file)?;
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        list_requests(&server, &app_id, &secret).await
-    });
+    let result = rt.block_on(async { list_requests(&server, &app_id, &secret).await });
 
     match result {
         Ok(requests) => {
@@ -316,9 +374,7 @@ pub fn cmd_deny(file: PathBuf, user: String) -> Result<()> {
     println!("审批拒绝 {}...", user);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(async {
-        deny_request(&server, &app_id, &secret, &user).await
-    });
+    let result = rt.block_on(async { deny_request(&server, &app_id, &secret, &user).await });
 
     match result {
         Ok(msg) => println!("{}", msg),
@@ -329,18 +385,30 @@ pub fn cmd_deny(file: PathBuf, user: String) -> Result<()> {
 
 // ===== HTTP 请求 =====
 
-async fn register_app(server: &str, app_id: &str, secret: &str, content_key: &str, allow_temp: bool) -> std::result::Result<(), String> {
+async fn register_app(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+    content_key: &str,
+    allow_temp: bool,
+) -> std::result::Result<(), String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/register", server))
+    let resp = client
+        .post(format!("{}/api/register", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
             "content_key": content_key,
             "allow_temp": allow_temp,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     if data["success"].as_bool().unwrap_or(false) {
         Ok(())
     } else {
@@ -348,13 +416,23 @@ async fn register_app(server: &str, app_id: &str, secret: &str, content_key: &st
     }
 }
 
-async fn request_key(server: &str, app_id: &str, user_id: &str) -> std::result::Result<String, String> {
+async fn request_key(
+    server: &str,
+    app_id: &str,
+    user_id: &str,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/key", server))
+    let resp = client
+        .post(format!("{}/api/key", server))
         .json(&serde_json::json!({ "app_id": app_id, "user_id": user_id }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
 
     if data["success"].as_bool().unwrap_or(false) {
         Ok(data["key"].as_str().unwrap_or("").to_string())
@@ -363,47 +441,82 @@ async fn request_key(server: &str, app_id: &str, user_id: &str) -> std::result::
     }
 }
 
-async fn grant_user(server: &str, app_id: &str, secret: &str, user_id: &str, expires_at: Option<&str>) -> std::result::Result<String, String> {
+async fn grant_user(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+    user_id: &str,
+    expires_at: Option<&str>,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/grant", server))
+    let resp = client
+        .post(format!("{}/api/grant", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
             "user_id": user_id,
             "expires_at": expires_at,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     Ok(data["message"].as_str().unwrap_or("").to_string())
 }
 
-async fn revoke_user(server: &str, app_id: &str, secret: &str, user_id: &str) -> std::result::Result<String, String> {
+async fn revoke_user(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+    user_id: &str,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/revoke", server))
+    let resp = client
+        .post(format!("{}/api/revoke", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
             "user_id": user_id,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     Ok(data["message"].as_str().unwrap_or("").to_string())
 }
 
-async fn request_access(server: &str, app_id: &str, user_id: &str, need_days: Option<i32>, message: Option<String>) -> std::result::Result<String, String> {
+async fn request_access(
+    server: &str,
+    app_id: &str,
+    user_id: &str,
+    need_days: Option<i32>,
+    message: Option<String>,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/request", server))
+    let resp = client
+        .post(format!("{}/api/request", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
             "need_days": need_days,
             "message": message,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     Ok(data["message"].as_str().unwrap_or("").to_string())
 }
 
@@ -415,13 +528,23 @@ struct RequestInfo {
     created_at: String,
 }
 
-async fn list_requests(server: &str, app_id: &str, secret: &str) -> std::result::Result<Vec<RequestInfo>, String> {
+async fn list_requests(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+) -> std::result::Result<Vec<RequestInfo>, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/requests", server))
+    let resp = client
+        .post(format!("{}/api/requests", server))
         .json(&serde_json::json!({ "app_id": app_id, "secret": secret }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
 
     if data["success"].as_bool().unwrap_or(false) {
         let requests: Vec<RequestInfo> = serde_json::from_value(data["requests"].clone())
@@ -432,32 +555,55 @@ async fn list_requests(server: &str, app_id: &str, secret: &str) -> std::result:
     }
 }
 
-async fn approve_request(server: &str, app_id: &str, secret: &str, user_id: &str, expires_at: Option<&str>) -> std::result::Result<String, String> {
+async fn approve_request(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+    user_id: &str,
+    expires_at: Option<&str>,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/approve", server))
+    let resp = client
+        .post(format!("{}/api/approve", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
             "user_id": user_id,
             "expires_at": expires_at,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     Ok(data["message"].as_str().unwrap_or("").to_string())
 }
 
-async fn deny_request(server: &str, app_id: &str, secret: &str, user_id: &str) -> std::result::Result<String, String> {
+async fn deny_request(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+    user_id: &str,
+) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/deny", server))
+    let resp = client
+        .post(format!("{}/api/deny", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
             "user_id": user_id,
         }))
-        .send().await.map_err(|e| format!("网络错误: {}", e))?;
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| format!("响应解析失败: {}", e))?;
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
     Ok(data["message"].as_str().unwrap_or("").to_string())
 }
 
@@ -483,10 +629,12 @@ fn get_secret(file: &Path) -> Result<String> {
         Ok(std::fs::read_to_string(secret_path)?.trim().to_string())
     } else {
         // 尝试环境变量
-        std::env::var("SECUNZIP_SECRET")
-            .map_err(|_| crate::SecUnzipError::Other(
-                format!("未找到密钥文件 {}，请设置 SECUNZIP_SECRET 环境变量", secret_path.display())
+        std::env::var("SECUNZIP_SECRET").map_err(|_| {
+            crate::SecUnzipError::Other(format!(
+                "未找到密钥文件 {}，请设置 SECUNZIP_SECRET 环境变量",
+                secret_path.display()
             ))
+        })
     }
 }
 
@@ -494,7 +642,7 @@ fn get_secret(file: &Path) -> Result<String> {
 fn get_server(file: &Path) -> Result<String> {
     let loader = crate::runtime::RuntimeLoader::from_file(file)?;
     let header = loader.header();
-    
+
     match &header.config.auth_mode {
         crate::core::AuthMode::Remote(url) => Ok(url.clone()),
         _ => Err(crate::SecUnzipError::Other("文件未配置服务端地址".into())),

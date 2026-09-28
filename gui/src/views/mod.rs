@@ -1,6 +1,6 @@
 pub mod chrome;
-pub mod setup;
-pub mod open;
 pub mod manage;
+pub mod open;
 pub mod pack;
 pub mod settings;
+pub mod setup;

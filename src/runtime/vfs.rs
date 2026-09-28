@@ -3,8 +3,8 @@
 //! 将解密解压后的文件装载为只读文件树，模拟虚拟 ISO 挂载效果。
 //! 文件内容只存在内存中，关闭程序后自动消失，防止复制。
 
-use std::collections::BTreeMap;
 use crate::Result;
+use std::collections::BTreeMap;
 
 /// 虚拟文件系统节点
 #[derive(Debug, Clone)]
@@ -48,7 +48,11 @@ impl VirtualFS {
             insert_path(&mut root, &path, content);
         }
 
-        Self { root, total_size, file_count }
+        Self {
+            root,
+            total_size,
+            file_count,
+        }
     }
 
     /// 总大小
@@ -65,8 +69,9 @@ impl VirtualFS {
     pub fn list_dir(&self, dir_path: &str) -> Vec<FileEntry> {
         let node = self.resolve(dir_path);
         match node {
-            Some(VfsNode::Dir(children)) => {
-                children.iter().map(|(name, child)| {
+            Some(VfsNode::Dir(children)) => children
+                .iter()
+                .map(|(name, child)| {
                     let full_path = if dir_path.is_empty() {
                         name.clone()
                     } else {
@@ -76,9 +81,14 @@ impl VirtualFS {
                         VfsNode::Dir(_) => (true, 0),
                         VfsNode::File(data) => (false, data.len()),
                     };
-                    FileEntry { path: full_path, name: name.clone(), is_dir, size }
-                }).collect()
-            }
+                    FileEntry {
+                        path: full_path,
+                        name: name.clone(),
+                        is_dir,
+                        size,
+                    }
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -87,12 +97,13 @@ impl VirtualFS {
     pub fn read_file(&self, path: &str) -> Result<&[u8]> {
         match self.resolve(path) {
             Some(VfsNode::File(data)) => Ok(data),
-            Some(VfsNode::Dir(_)) => Err(crate::SecUnzipError::Unpacking(
-                format!("{} 是目录", path)
-            )),
-            None => Err(crate::SecUnzipError::Unpacking(
-                format!("文件不存在: {}", path)
-            )),
+            Some(VfsNode::Dir(_)) => {
+                Err(crate::SecUnzipError::Unpacking(format!("{} 是目录", path)))
+            }
+            None => Err(crate::SecUnzipError::Unpacking(format!(
+                "文件不存在: {}",
+                path
+            ))),
         }
     }
 
@@ -105,18 +116,58 @@ impl VirtualFS {
     /// 判断是否可能是文本文件（根据扩展名）
     pub fn is_text_file(path: &str) -> bool {
         let text_exts = [
-            "txt", "md", "rs", "py", "js", "ts", "jsx", "tsx", "html", "htm",
-            "css", "json", "xml", "yml", "yaml", "toml", "ini", "cfg", "conf",
-            "log", "csv", "sql", "sh", "bat", "ps1", "c", "h", "cpp", "hpp",
-            "java", "go", "rb", "php", "lua", "swift", "kt", "gradle", "cmake",
-            "gitignore", "dockerfile", "makefile", "env",
+            "txt",
+            "md",
+            "rs",
+            "py",
+            "js",
+            "ts",
+            "jsx",
+            "tsx",
+            "html",
+            "htm",
+            "css",
+            "json",
+            "xml",
+            "yml",
+            "yaml",
+            "toml",
+            "ini",
+            "cfg",
+            "conf",
+            "log",
+            "csv",
+            "sql",
+            "sh",
+            "bat",
+            "ps1",
+            "c",
+            "h",
+            "cpp",
+            "hpp",
+            "java",
+            "go",
+            "rb",
+            "php",
+            "lua",
+            "swift",
+            "kt",
+            "gradle",
+            "cmake",
+            "gitignore",
+            "dockerfile",
+            "makefile",
+            "env",
         ];
         match path.rsplit_once('.') {
             Some((_, ext)) => text_exts.contains(&ext.to_lowercase().as_str()),
             // 无扩展名的可能是 README、LICENSE 等
             None => {
                 let name = path.rsplit('/').next().unwrap_or(path).to_uppercase();
-                matches!(name.as_str(), "README" | "LICENSE" | "CHANGELOG" | "MAKEFILE" | "DOCKERFILE")
+                matches!(
+                    name.as_str(),
+                    "README" | "LICENSE" | "CHANGELOG" | "MAKEFILE" | "DOCKERFILE"
+                )
             }
         }
     }

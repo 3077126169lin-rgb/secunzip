@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 use super::types::*;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// 项目配置文件
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,7 +15,7 @@ pub struct ProjectConfig {
 }
 
 /// 打包产物头部结构
-/// 
+///
 /// EXE格式：追加到exe尾部
 /// 自有格式：文件头部
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ impl PackHeader {
         // 先序列化配置
         let config_bytes = bincode::serialize(&self.config)
             .map_err(|e| crate::SecUnzipError::Format(format!("序列化配置失败: {}", e)))?;
-        
+
         // 构建完整头部
         let mut data = Vec::new();
         data.extend_from_slice(&self.magic);
@@ -65,7 +65,7 @@ impl PackHeader {
         data.extend_from_slice(&self.original_size.to_le_bytes());
         data.extend_from_slice(&(self.integrity_hash.len() as u32).to_le_bytes());
         data.extend_from_slice(&self.integrity_hash);
-        
+
         Ok(data)
     }
 
@@ -73,35 +73,36 @@ impl PackHeader {
         if data.len() < 8 {
             return Err(crate::SecUnzipError::Format("头部数据太短".into()));
         }
-        
+
         let magic: [u8; 8] = data[0..8].try_into().unwrap();
         if &magic != crate::MAGIC {
             return Err(crate::SecUnzipError::Format("无效的魔数".into()));
         }
-        
+
         let version = u16::from_le_bytes(data[8..10].try_into().unwrap());
         let format = match data[10] {
             0 => OutputFormat::Exe,
             1 => OutputFormat::SecUnzip,
             _ => return Err(crate::SecUnzipError::Format("无效的格式类型".into())),
         };
-        
+
         let config_len = u32::from_le_bytes(data[11..15].try_into().unwrap()) as usize;
         if data.len() < 15 + config_len + 32 {
             return Err(crate::SecUnzipError::Format("头部数据不完整".into()));
         }
-        
+
         let config: PackConfig = bincode::deserialize(&data[15..15 + config_len])
             .map_err(|e| crate::SecUnzipError::Format(format!("反序列化配置失败: {}", e)))?;
-        
+
         let offset = 15 + config_len;
-        let data_offset = u64::from_le_bytes(data[offset..offset+8].try_into().unwrap());
-        let data_size = u64::from_le_bytes(data[offset+8..offset+16].try_into().unwrap());
-        let original_size = u64::from_le_bytes(data[offset+16..offset+24].try_into().unwrap());
-        
-        let hash_len = u32::from_le_bytes(data[offset+24..offset+28].try_into().unwrap()) as usize;
-        let integrity_hash = data[offset+28..offset+28+hash_len].to_vec();
-        
+        let data_offset = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
+        let data_size = u64::from_le_bytes(data[offset + 8..offset + 16].try_into().unwrap());
+        let original_size = u64::from_le_bytes(data[offset + 16..offset + 24].try_into().unwrap());
+
+        let hash_len =
+            u32::from_le_bytes(data[offset + 24..offset + 28].try_into().unwrap()) as usize;
+        let integrity_hash = data[offset + 28..offset + 28 + hash_len].to_vec();
+
         Ok(Self {
             magic,
             version,
@@ -113,7 +114,7 @@ impl PackHeader {
             integrity_hash,
         })
     }
-    
+
     /// 计算头部总大小
     pub fn total_size(&self) -> usize {
         8 +  // magic

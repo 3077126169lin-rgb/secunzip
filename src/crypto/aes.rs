@@ -1,7 +1,7 @@
-use aes::cipher::{block_padding::Pkcs7, KeyIvInit, BlockDecryptMut, BlockEncryptMut};
+use super::traits::Encryptor;
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::Aes256Gcm;
-use super::traits::Encryptor;
 
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
@@ -11,10 +11,14 @@ pub struct Aes256CbcEncryptor;
 impl Encryptor for Aes256CbcEncryptor {
     fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8]) -> crate::Result<Vec<u8>> {
         if key.len() != 32 {
-            return Err(crate::SecUnzipError::Crypto("AES-256 密钥必须 32 字节".into()));
+            return Err(crate::SecUnzipError::Crypto(
+                "AES-256 密钥必须 32 字节".into(),
+            ));
         }
         if iv.len() != 16 {
-            return Err(crate::SecUnzipError::Crypto("AES CBC IV 必须 16 字节".into()));
+            return Err(crate::SecUnzipError::Crypto(
+                "AES CBC IV 必须 16 字节".into(),
+            ));
         }
 
         let encryptor = Aes256CbcEnc::new(key.into(), iv.into());
@@ -29,10 +33,14 @@ impl Encryptor for Aes256CbcEncryptor {
 
     fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8]) -> crate::Result<Vec<u8>> {
         if key.len() != 32 {
-            return Err(crate::SecUnzipError::Decrypt("AES-256 密钥必须 32 字节".into()));
+            return Err(crate::SecUnzipError::Decrypt(
+                "AES-256 密钥必须 32 字节".into(),
+            ));
         }
         if iv.len() != 16 {
-            return Err(crate::SecUnzipError::Decrypt("AES CBC IV 必须 16 字节".into()));
+            return Err(crate::SecUnzipError::Decrypt(
+                "AES CBC IV 必须 16 字节".into(),
+            ));
         }
 
         let decryptor = Aes256CbcDec::new(key.into(), iv.into());
@@ -65,10 +73,14 @@ pub struct Aes256GcmEncryptor;
 impl Encryptor for Aes256GcmEncryptor {
     fn encrypt(&self, plaintext: &[u8], key: &[u8], iv: &[u8]) -> crate::Result<Vec<u8>> {
         if key.len() != 32 {
-            return Err(crate::SecUnzipError::Crypto("AES-256-GCM 密钥必须 32 字节".into()));
+            return Err(crate::SecUnzipError::Crypto(
+                "AES-256-GCM 密钥必须 32 字节".into(),
+            ));
         }
         if iv.len() != 12 {
-            return Err(crate::SecUnzipError::Crypto("AES-GCM nonce 必须 12 字节".into()));
+            return Err(crate::SecUnzipError::Crypto(
+                "AES-GCM nonce 必须 12 字节".into(),
+            ));
         }
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|_| crate::SecUnzipError::Crypto("GCM 密钥初始化失败".into()))?;
@@ -79,10 +91,14 @@ impl Encryptor for Aes256GcmEncryptor {
 
     fn decrypt(&self, ciphertext: &[u8], key: &[u8], iv: &[u8]) -> crate::Result<Vec<u8>> {
         if key.len() != 32 {
-            return Err(crate::SecUnzipError::Decrypt("AES-256-GCM 密钥必须 32 字节".into()));
+            return Err(crate::SecUnzipError::Decrypt(
+                "AES-256-GCM 密钥必须 32 字节".into(),
+            ));
         }
         if iv.len() != 12 {
-            return Err(crate::SecUnzipError::Decrypt("AES-GCM nonce 必须 12 字节".into()));
+            return Err(crate::SecUnzipError::Decrypt(
+                "AES-GCM nonce 必须 12 字节".into(),
+            ));
         }
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|_| crate::SecUnzipError::Decrypt("GCM 密钥初始化失败".into()))?;

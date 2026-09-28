@@ -2,9 +2,9 @@
 //! 1. content_key / 明文绝不写入打包文件（防泄漏）
 //! 2. 注册服务端失败时绝不留下「死文件」（防孤儿不可开文件）
 
-use std::fs;
 use secunzip::core::*;
 use secunzip::packer::PackBuilder;
+use std::fs;
 
 fn config_with_key(key: &str) -> PackConfig {
     PackConfig {
@@ -34,18 +34,26 @@ fn content_key_and_plaintext_never_in_file() {
     // 用唯一且足够长的 content_key，避免偶然字节碰撞
     let content_key = "MY_CONTENT_KEY_abcdef0123456789_F3X";
     let output = temp_dir.path().join("o.secunzip");
-    let builder = PackBuilder::new(config_with_key(content_key), vec![source_dir], output.clone());
+    let builder = PackBuilder::new(
+        config_with_key(content_key),
+        vec![source_dir],
+        output.clone(),
+    );
     builder.build().unwrap();
     let bytes = fs::read(&output).unwrap();
 
     // content_key 明文绝不出现（服务端才持有）
     assert!(
-        !bytes.windows(content_key.len()).any(|w| w == content_key.as_bytes()),
+        !bytes
+            .windows(content_key.len())
+            .any(|w| w == content_key.as_bytes()),
         "content_key 泄漏进了打包文件字节"
     );
     // 原文绝不出现（已加密）
     assert!(
-        !bytes.windows(secret_plaintext.len()).any(|w| w == secret_plaintext.as_bytes()),
+        !bytes
+            .windows(secret_plaintext.len())
+            .any(|w| w == secret_plaintext.as_bytes()),
         "明文泄漏进了打包文件字节"
     );
 }
@@ -78,7 +86,11 @@ fn register_failure_leaves_no_dead_file() {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.ends_with(".secret") || n.ends_with(".secunzip"))
         .collect();
-    assert!(leftovers.is_empty(), "注册失败后不应留下任何产物: {:?}", leftovers);
+    assert!(
+        leftovers.is_empty(),
+        "注册失败后不应留下任何产物: {:?}",
+        leftovers
+    );
 }
 
 #[test]
@@ -97,8 +109,8 @@ fn blackbox_exe_self_extract_roundtrip() {
     let bytes = fs::read(&output).unwrap();
 
     // 检测自解压尾部标记 + 取出内嵌的标准 .secunzip
-    let embedded = secunzip::runtime::embedded_secunzip(&bytes)
-        .expect("黑盒 EXE 应含自解压内嵌数据");
+    let embedded =
+        secunzip::runtime::embedded_secunzip(&bytes).expect("黑盒 EXE 应含自解压内嵌数据");
 
     // 内存解压（黑盒）：用 content_key 挂载 VFS
     let loader = secunzip::runtime::RuntimeLoader::from_bytes(embedded).unwrap();
@@ -107,7 +119,9 @@ fn blackbox_exe_self_extract_roundtrip() {
 
     // content_key 不应泄漏进内嵌 .secunzip（存根是工具自身二进制，另测）
     assert!(
-        !embedded.windows(content_key.len()).any(|w| w == content_key.as_bytes()),
+        !embedded
+            .windows(content_key.len())
+            .any(|w| w == content_key.as_bytes()),
         "content_key 泄漏进内嵌 .secunzip"
     );
 }

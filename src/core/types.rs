@@ -99,8 +99,8 @@ pub enum KeyNode {
 /// 条件判断
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Condition {
-    IpInRange(String, String),  // IP, CIDR
-    DateBefore(String),         // YYYYMMDD
+    IpInRange(String, String), // IP, CIDR
+    DateBefore(String),        // YYYYMMDD
     DateAfter(String),
     AlwaysTrue,
     AlwaysFalse,
@@ -123,7 +123,7 @@ pub enum AuthMode {
     /// 纯本地认证
     Local,
     /// 服务端认证
-    Remote(String),  // 服务端URL
+    Remote(String), // 服务端URL
 }
 
 /// 打包配置

@@ -34,8 +34,9 @@ pub fn detect_self_extract(exe: &[u8]) -> Option<usize> {
 
 /// 取出内嵌的标准 .secunzip 字节（[PackHeader][加密数据]），可直接喂给 RuntimeLoader
 pub fn embedded_secunzip(exe: &[u8]) -> Result<&[u8]> {
-    let off = detect_self_extract(exe)
-        .ok_or_else(|| crate::SecUnzipError::Unpacking("不是自解压黑盒 EXE（缺少尾部标记）".into()))?;
+    let off = detect_self_extract(exe).ok_or_else(|| {
+        crate::SecUnzipError::Unpacking("不是自解压黑盒 EXE（缺少尾部标记）".into())
+    })?;
     Ok(&exe[off..exe.len() - TRAILER_SIZE])
 }
 

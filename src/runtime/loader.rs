@@ -1,10 +1,10 @@
-use std::path::Path;
-use sha2::{Sha256, Digest};
-use crate::core::{PackHeader, OutputFormat};
+use crate::core::{OutputFormat, PackHeader};
 use crate::crypto::{create_encryptor, keywrap::derive_key_iv};
 use crate::key_derive::KeyDeriveEngine;
 use crate::packer::compress::create_compressor;
 use crate::Result;
+use sha2::{Digest, Sha256};
+use std::path::Path;
 
 /// 运行时加载器
 pub struct RuntimeLoader {
@@ -31,18 +31,21 @@ impl RuntimeLoader {
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         // 尝试解析头部
         let header = PackHeader::from_bytes(data)?;
-        
+
         // 提取加密数据
         let data_start = header.data_offset as usize;
         let data_end = data_start + header.data_size as usize;
-        
+
         if data_end > data.len() {
             return Err(crate::SecUnzipError::Format("数据不完整".into()));
         }
-        
+
         let encrypted_data = data[data_start..data_end].to_vec();
-        
-        Ok(Self { header, encrypted_data })
+
+        Ok(Self {
+            header,
+            encrypted_data,
+        })
     }
 
     /// 获取头部信息
@@ -68,7 +71,7 @@ impl RuntimeLoader {
         // 2. 派生密钥
         let engine = KeyDeriveEngine::new(self.header.config.salt.clone());
         let key_material = engine.derive(&self.header.config.key_derive)?;
-        
+
         let encryptor = create_encryptor(&self.header.config.crypto);
         let (key, iv) = derive_key_iv(
             &key_material,
@@ -95,7 +98,8 @@ impl RuntimeLoader {
         }
 
         // 2. 用服务端密钥派生（与打包侧 Literal(file_key) 一致）
-        let node = crate::core::KeyNode::Input(crate::core::KeySource::Literal(key_str.to_string()));
+        let node =
+            crate::core::KeyNode::Input(crate::core::KeySource::Literal(key_str.to_string()));
         let engine = KeyDeriveEngine::new(self.header.config.salt.clone());
         let key_material = engine.derive(&node)?;
 
@@ -132,9 +136,7 @@ impl RuntimeLoader {
                 self.execute_sandbox(&files)?;
                 Ok(ExtractResult::Executed)
             }
-            OutputFormat::SecUnzip => {
-                Ok(ExtractResult::Files(files))
-            }
+            OutputFormat::SecUnzip => Ok(ExtractResult::Files(files)),
         }
     }
 
@@ -143,7 +145,7 @@ impl RuntimeLoader {
         match self.extract_with_key(key_str)? {
             ExtractResult::Files(files) => Ok(crate::runtime::VirtualFS::from_files(files)),
             ExtractResult::Executed => Err(crate::SecUnzipError::Unpacking(
-                "EXE 格式不支持文件浏览".into()
+                "EXE 格式不支持文件浏览".into(),
             )),
         }
     }
@@ -153,7 +155,7 @@ impl RuntimeLoader {
         match self.extract()? {
             ExtractResult::Files(files) => Ok(crate::runtime::VirtualFS::from_files(files)),
             ExtractResult::Executed => Err(crate::SecUnzipError::Unpacking(
-                "EXE 格式不支持文件浏览".into()
+                "EXE 格式不支持文件浏览".into(),
             )),
         }
     }
@@ -171,7 +173,7 @@ impl RuntimeLoader {
         // 2. 派生密钥
         let engine = KeyDeriveEngine::new(self.header.config.salt.clone());
         let key_material = engine.derive(&self.header.config.key_derive)?;
-        
+
         let encryptor = create_encryptor(&self.header.config.crypto);
         let (key, iv) = derive_key_iv(
             &key_material,
@@ -192,9 +194,9 @@ impl RuntimeLoader {
         // 5. 解压到目录
         let compressor = create_compressor(&self.header.config.compress);
         let files = compressor.decompress(&compressed)?;
-        
+
         std::fs::create_dir_all(dest)?;
-        
+
         for (name, content) in files {
             let file_path = dest.join(&name);
             if let Some(parent) = file_path.parent() {
@@ -212,11 +214,11 @@ impl RuntimeLoader {
         // - .exe: RunPE / 进程镂空
         // - .html/.js: 内嵌浏览器
         // - 其他: 临时落盘后用默认程序打开
-        
+
         // 暂时简化：临时落盘执行
         let temp_dir = tempfile::tempdir()
             .map_err(|e| crate::SecUnzipError::Unpacking(format!("创建临时目录失败: {}", e)))?;
-        
+
         for (name, content) in files {
             let file_path = temp_dir.path().join(name);
             if let Some(parent) = file_path.parent() {
@@ -224,7 +226,7 @@ impl RuntimeLoader {
             }
             std::fs::write(&file_path, content)?;
         }
-        
+
         // 打开临时目录
         #[cfg(windows)]
         {
@@ -233,11 +235,11 @@ impl RuntimeLoader {
                 .spawn()
                 .map_err(|e| crate::SecUnzipError::Unpacking(format!("打开目录失败: {}", e)))?;
         }
-        
+
         // 保持临时目录存在直到程序退出
         // TODO: 更优雅的处理
         std::thread::sleep(std::time::Duration::from_secs(1));
-        
+
         Ok(())
     }
 }

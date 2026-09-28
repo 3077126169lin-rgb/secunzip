@@ -36,7 +36,11 @@ fn draw_click(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
     let painter = ui.painter_at(rect);
-    let col = if resp.hovered() { color } else { color.gamma_multiply(0.65) };
+    let col = if resp.hovered() {
+        color
+    } else {
+        color.gamma_multiply(0.65)
+    };
     f(&painter, rect.center(), size / VB);
     let _ = col;
     resp
@@ -122,7 +126,11 @@ pub fn box_(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
             1.8 * s,
             st,
         );
-        poly(pt, &[p(c, s, 4.5, 8.5), p(c, s, 12.0, 4.5), p(c, s, 19.5, 8.5)], st);
+        poly(
+            pt,
+            &[p(c, s, 4.5, 8.5), p(c, s, 12.0, 4.5), p(c, s, 19.5, 8.5)],
+            st,
+        );
         poly(pt, &[p(c, s, 12.0, 4.5), p(c, s, 12.0, 20.0)], st);
     })
 }
@@ -143,7 +151,11 @@ pub fn file(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
             ],
             st,
         );
-        poly(pt, &[p(c, s, 14.0, 3.5), p(c, s, 14.0, 8.0), p(c, s, 18.5, 8.0)], st);
+        poly(
+            pt,
+            &[p(c, s, 14.0, 3.5), p(c, s, 14.0, 8.0), p(c, s, 18.5, 8.0)],
+            st,
+        );
     })
 }
 
@@ -154,7 +166,9 @@ pub fn folder(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
 
 /// 可点击的文件夹（打开所在位置）
 pub fn folder_click(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
-    draw_click(ui, size, color, |pt, c, s| folder_path(pt, c, s, stroke(color)))
+    draw_click(ui, size, color, |pt, c, s| {
+        folder_path(pt, c, s, stroke(color))
+    })
 }
 
 /// 扳手（管理）
@@ -164,7 +178,12 @@ pub fn wrench(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
         pt.circle_stroke(p(c, s, 16.5, 7.5), 3.6 * s, st);
         poly(
             pt,
-            &[p(c, s, 14.0, 10.0), p(c, s, 5.5, 18.5), p(c, s, 4.5, 20.0), p(c, s, 6.0, 19.0)],
+            &[
+                p(c, s, 14.0, 10.0),
+                p(c, s, 5.5, 18.5),
+                p(c, s, 4.5, 20.0),
+                p(c, s, 6.0, 19.0),
+            ],
             st,
         );
     })
@@ -225,8 +244,16 @@ pub fn globe(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
         let st = stroke(color);
         pt.circle_stroke(p(c, s, 12.0, 12.0), 8.0 * s, st);
         pt.line_segment([p(c, s, 4.0, 12.0), p(c, s, 20.0, 12.0)], st);
-        poly(pt, &[p(c, s, 7.0, 6.5), p(c, s, 12.0, 5.5), p(c, s, 17.0, 6.5)], st);
-        poly(pt, &[p(c, s, 7.0, 17.5), p(c, s, 12.0, 18.5), p(c, s, 17.0, 17.5)], st);
+        poly(
+            pt,
+            &[p(c, s, 7.0, 6.5), p(c, s, 12.0, 5.5), p(c, s, 17.0, 6.5)],
+            st,
+        );
+        poly(
+            pt,
+            &[p(c, s, 7.0, 17.5), p(c, s, 12.0, 18.5), p(c, s, 17.0, 17.5)],
+            st,
+        );
     })
 }
 
@@ -296,7 +323,11 @@ pub fn upload(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     draw(ui, size, |pt, c, s| {
         let st = stroke(color);
         pt.line_segment([p(c, s, 12.0, 19.0), p(c, s, 12.0, 5.0)], st);
-        poly(pt, &[p(c, s, 7.0, 10.0), p(c, s, 12.0, 5.0), p(c, s, 17.0, 10.0)], st);
+        poly(
+            pt,
+            &[p(c, s, 7.0, 10.0), p(c, s, 12.0, 5.0), p(c, s, 17.0, 10.0)],
+            st,
+        );
         poly(pt, &[p(c, s, 5.0, 21.0), p(c, s, 19.0, 21.0)], st);
     })
 }

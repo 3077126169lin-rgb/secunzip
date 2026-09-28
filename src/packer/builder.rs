@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use sha2::{Sha256, Digest};
-use crate::core::{PackConfig, PackHeader, OutputFormat};
+use super::compress::create_compressor;
+use crate::core::{OutputFormat, PackConfig, PackHeader};
 use crate::crypto::{create_encryptor, keywrap::derive_key_iv};
 use crate::key_derive::KeyDeriveEngine;
-use super::compress::create_compressor;
-use crate::{Result, MAGIC, FORMAT_VERSION, MAX_CONTENT_SIZE};
+use crate::{Result, FORMAT_VERSION, MAGIC, MAX_CONTENT_SIZE};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// 打包器
 pub struct PackBuilder {
@@ -16,7 +16,11 @@ pub struct PackBuilder {
 
 impl PackBuilder {
     pub fn new(config: PackConfig, sources: Vec<PathBuf>, output: PathBuf) -> Self {
-        Self { config, sources, output }
+        Self {
+            config,
+            sources,
+            output,
+        }
     }
 
     /// 执行打包并写入 self.output
@@ -64,8 +68,12 @@ impl PackBuilder {
         // 6. 根据格式组装
         println!("[4/5] 生成产物...");
         match self.config.format {
-            OutputFormat::Exe => self.build_exe(&encrypted, &integrity_hash, compressed.len() as u64),
-            OutputFormat::SecUnzip => self.build_secunzip(&encrypted, &integrity_hash, compressed.len() as u64),
+            OutputFormat::Exe => {
+                self.build_exe(&encrypted, &integrity_hash, compressed.len() as u64)
+            }
+            OutputFormat::SecUnzip => {
+                self.build_secunzip(&encrypted, &integrity_hash, compressed.len() as u64)
+            }
         }
     }
 
@@ -76,11 +84,11 @@ impl PackBuilder {
         if self.sources.len() == 1 && self.sources[0].is_dir() {
             return compressor.compress_dir(&self.sources[0]);
         }
-        
+
         // 多个源文件/目录，创建临时目录收集
         let temp_dir = tempfile::tempdir()
             .map_err(|e| crate::SecUnzipError::Packing(format!("创建临时目录失败: {}", e)))?;
-        
+
         for source in &self.sources {
             if source.is_dir() {
                 copy_dir_recursive(source, &temp_dir.path().join(source.file_name().unwrap()))?;
@@ -89,7 +97,7 @@ impl PackBuilder {
                 fs::copy(source, dest)?;
             }
         }
-        
+
         compressor.compress_dir(temp_dir.path())
     }
 
@@ -100,15 +108,21 @@ impl PackBuilder {
     fn header_config(&self) -> PackConfig {
         let mut c = self.config.clone();
         if matches!(self.config.auth_mode, crate::core::AuthMode::Remote(_)) {
-            c.key_derive = crate::core::KeyNode::Input(crate::core::KeySource::Literal(String::new()));
+            c.key_derive =
+                crate::core::KeyNode::Input(crate::core::KeySource::Literal(String::new()));
         }
         c
     }
 
     /// 构建 EXE 格式
-    /// 
+    ///
     /// 结构: [运行时代码] [头部] [加密数据]
-    fn build_exe(&self, encrypted: &[u8], integrity_hash: &[u8], original_size: u64) -> Result<Vec<u8>> {
+    fn build_exe(
+        &self,
+        encrypted: &[u8],
+        integrity_hash: &[u8],
+        original_size: u64,
+    ) -> Result<Vec<u8>> {
         // 1. 构造标准 .secunzip（[header][data]，自包含，data_offset 相对其起点）
         let mut embedded = self.build_secunzip(encrypted, integrity_hash, original_size)?;
 
@@ -131,32 +145,37 @@ impl PackBuilder {
     }
 
     /// 构建自有格式 .secunzip
-    /// 
+    ///
     /// 结构: [文件头] [加密数据]
-    fn build_secunzip(&self, encrypted: &[u8], integrity_hash: &[u8], original_size: u64) -> Result<Vec<u8>> {
+    fn build_secunzip(
+        &self,
+        encrypted: &[u8],
+        integrity_hash: &[u8],
+        original_size: u64,
+    ) -> Result<Vec<u8>> {
         let header = PackHeader {
             magic: *MAGIC,
             version: FORMAT_VERSION,
             format: OutputFormat::SecUnzip,
             config: self.header_config(),
-            data_offset: 0,  // 稍后计算
+            data_offset: 0, // 稍后计算
             data_size: encrypted.len() as u64,
             original_size,
             integrity_hash: integrity_hash.to_vec(),
         };
-        
+
         let header_bytes = header.to_bytes()?;
         let data_offset = header_bytes.len();
-        
+
         let mut header = header;
         header.data_offset = data_offset as u64;
         let header_bytes = header.to_bytes()?;
-        
+
         // 组装文件
         let mut output = Vec::new();
         output.extend_from_slice(&header_bytes);
         output.extend_from_slice(encrypted);
-        
+
         Ok(output)
     }
 }
@@ -164,18 +183,18 @@ impl PackBuilder {
 /// 递归复制目录
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
-    
+
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
         let dest_path = dest.join(entry.file_name());
-        
+
         if path.is_dir() {
             copy_dir_recursive(&path, &dest_path)?;
         } else {
             fs::copy(&path, dest_path)?;
         }
     }
-    
+
     Ok(())
 }

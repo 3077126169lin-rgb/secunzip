@@ -250,8 +250,9 @@ fn xml_escape(s: &str) -> String {
 
 /// 生成 WebDAV Multi-Status（自身 + 子项）
 fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
-    let mut xml =
-        String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n");
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n",
+    );
 
     let self_data = vfs.read_file(path).ok();
     let self_is_file = self_data.is_some();
@@ -276,10 +277,7 @@ fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
 
 fn push_response(xml: &mut String, href: &str, name: &str, is_file: bool, size: usize) {
     xml.push_str("<D:response>\n");
-    xml.push_str(&format!(
-        "<D:href>/{}</D:href>\n",
-        xml_escape(href)
-    ));
+    xml.push_str(&format!("<D:href>/{}</D:href>\n", xml_escape(href)));
     xml.push_str("<D:propstat>\n<D:prop>\n");
     xml.push_str(&format!(
         "<D:displayname>{}</D:displayname>\n",

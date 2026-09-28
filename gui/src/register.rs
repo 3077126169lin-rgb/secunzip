@@ -14,9 +14,18 @@ pub fn register_file_type() -> Result<String, String> {
     // (注册表键, 默认值)
     let entries = [
         ("HKCU\\Software\\Classes\\.secunzip", "SecUnzip.File"),
-        ("HKCU\\Software\\Classes\\SecUnzip.File", "SecUnzip 加密文件"),
-        ("HKCU\\Software\\Classes\\SecUnzip.File\\DefaultIcon", icon.as_str()),
-        ("HKCU\\Software\\Classes\\SecUnzip.File\\shell\\open\\command", command.as_str()),
+        (
+            "HKCU\\Software\\Classes\\SecUnzip.File",
+            "SecUnzip 加密文件",
+        ),
+        (
+            "HKCU\\Software\\Classes\\SecUnzip.File\\DefaultIcon",
+            icon.as_str(),
+        ),
+        (
+            "HKCU\\Software\\Classes\\SecUnzip.File\\shell\\open\\command",
+            command.as_str(),
+        ),
     ];
 
     for (key, value) in entries {

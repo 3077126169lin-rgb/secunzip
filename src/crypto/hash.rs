@@ -1,7 +1,7 @@
-use sha2::{Sha256, Sha512, Digest};
-use md5::Md5;
-use crate::core::HashAlgo;
 use super::traits::Hasher;
+use crate::core::HashAlgo;
+use md5::Md5;
+use sha2::{Digest, Sha256, Sha512};
 
 pub struct Sha256Hasher;
 pub struct Sha512Hasher;
@@ -12,24 +12,36 @@ impl Hasher for Sha256Hasher {
     fn hash(&self, data: &[u8]) -> Vec<u8> {
         Sha256::digest(data).to_vec()
     }
-    fn output_len(&self) -> usize { 32 }
-    fn algo_name(&self) -> &str { "SHA-256" }
+    fn output_len(&self) -> usize {
+        32
+    }
+    fn algo_name(&self) -> &str {
+        "SHA-256"
+    }
 }
 
 impl Hasher for Sha512Hasher {
     fn hash(&self, data: &[u8]) -> Vec<u8> {
         Sha512::digest(data).to_vec()
     }
-    fn output_len(&self) -> usize { 64 }
-    fn algo_name(&self) -> &str { "SHA-512" }
+    fn output_len(&self) -> usize {
+        64
+    }
+    fn algo_name(&self) -> &str {
+        "SHA-512"
+    }
 }
 
 impl Hasher for Blake3Hasher {
     fn hash(&self, data: &[u8]) -> Vec<u8> {
         blake3::hash(data).as_bytes().to_vec()
     }
-    fn output_len(&self) -> usize { 32 }
-    fn algo_name(&self) -> &str { "BLAKE3" }
+    fn output_len(&self) -> usize {
+        32
+    }
+    fn algo_name(&self) -> &str {
+        "BLAKE3"
+    }
 }
 
 impl Hasher for Md5Hasher {
@@ -37,8 +49,12 @@ impl Hasher for Md5Hasher {
         use md5::Digest;
         Md5::digest(data).to_vec()
     }
-    fn output_len(&self) -> usize { 16 }
-    fn algo_name(&self) -> &str { "MD5" }
+    fn output_len(&self) -> usize {
+        16
+    }
+    fn algo_name(&self) -> &str {
+        "MD5"
+    }
 }
 
 pub fn create_hasher(algo: &HashAlgo) -> Box<dyn Hasher> {
@@ -53,7 +69,10 @@ pub fn create_hasher(algo: &HashAlgo) -> Box<dyn Hasher> {
 /// 计算 MD5 十六进制（小写）——用作文件 ID
 pub fn md5_hex(data: &[u8]) -> String {
     use md5::Digest;
-    Md5::digest(data).iter().map(|b| format!("{:02x}", b)).collect()
+    Md5::digest(data)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 /// 计算文件的 MD5 十六进制（小写）——文件 ID

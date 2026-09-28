@@ -1,6 +1,6 @@
-use std::path::Path;
-use std::collections::HashMap;
 use crate::Result;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// 执行模式
 pub enum ExecuteMode {
@@ -57,9 +57,9 @@ impl Executor {
             name.ends_with(".exe") || name.ends_with(".bat") || name.ends_with(".cmd")
         });
 
-        let has_html = files.iter().any(|(name, _)| {
-            name.ends_with(".html") || name.ends_with(".htm")
-        });
+        let has_html = files
+            .iter()
+            .any(|(name, _)| name.ends_with(".html") || name.ends_with(".htm"));
 
         if has_exe {
             // 可执行文件：内存加载执行
@@ -78,7 +78,8 @@ impl Executor {
     /// 内存执行EXE
     fn execute_memory_exe(&self, files: &[(String, Vec<u8>)]) -> Result<()> {
         // 找到主EXE
-        let (exe_name, exe_data) = files.iter()
+        let (exe_name, exe_data) = files
+            .iter()
             .find(|(name, _)| name.ends_with(".exe"))
             .ok_or_else(|| crate::SecUnzipError::Unpacking("未找到EXE文件".into()))?;
 
@@ -92,7 +93,7 @@ impl Executor {
             // 暂时使用临时文件 + 立即删除的方式
             let temp = std::env::temp_dir().join(format!("{}.exe", uuid::Uuid::new_v4()));
             std::fs::write(&temp, exe_data)?;
-            
+
             // 启动进程
             let mut child = std::process::Command::new(&temp)
                 .spawn()
@@ -111,7 +112,9 @@ impl Executor {
 
         #[cfg(not(windows))]
         {
-            return Err(crate::SecUnzipError::Unpacking("内存执行暂不支持此平台".into()));
+            return Err(crate::SecUnzipError::Unpacking(
+                "内存执行暂不支持此平台".into(),
+            ));
         }
 
         Ok(())
@@ -119,7 +122,8 @@ impl Executor {
 
     /// 内存渲染HTML
     fn execute_memory_html(&self, files: &[(String, Vec<u8>)]) -> Result<()> {
-        let (html_name, _html_data) = files.iter()
+        let (html_name, _html_data) = files
+            .iter()
             .find(|(name, _)| name.ends_with(".html") || name.ends_with(".htm"))
             .ok_or_else(|| crate::SecUnzipError::Unpacking("未找到HTML文件".into()))?;
 

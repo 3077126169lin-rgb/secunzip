@@ -1,14 +1,14 @@
 //! SecUnzip 客户端：应用状态、业务逻辑与渲染入口。
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
-use eframe::egui;
 use crate::api;
 use crate::model::{Action, AppConfig, AppState, Mode, OpenTab, PackedEntry};
 use crate::monitor::{local_ip, Monitor};
 use crate::theme;
+use eframe::egui;
 use secunzip::runtime::{MountHandle, VirtualFS};
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// 内容列最大宽度：三个页面共用，保证页面之间左右边距一致
 const CONTENT_MAX_W: f32 = 760.0;
@@ -66,7 +66,11 @@ impl SecUnzipApp {
             Some(c) => (AppState::Main, c.user_id, c.server_url),
             None => (AppState::Setup, String::new(), String::new()),
         };
-        let state = if initial_file.is_some() { AppState::Main } else { state };
+        let state = if initial_file.is_some() {
+            AppState::Main
+        } else {
+            state
+        };
 
         let mut app = Self {
             state,
@@ -147,36 +151,64 @@ impl SecUnzipApp {
         true
     }
 
-    pub(crate) fn build_flow_node(pass: &str, machine: bool, user: bool, date: bool, hash: usize, b64: bool) -> secunzip::core::KeyNode {
-        use secunzip::core::{KeyNode, KeySource, KeyTransform, HashAlgo};
+    pub(crate) fn build_flow_node(
+        pass: &str,
+        machine: bool,
+        user: bool,
+        date: bool,
+        hash: usize,
+        b64: bool,
+    ) -> secunzip::core::KeyNode {
+        use secunzip::core::{HashAlgo, KeyNode, KeySource, KeyTransform};
         let mut inputs: Vec<KeyNode> = Vec::new();
         if !pass.trim().is_empty() {
             inputs.push(KeyNode::Input(KeySource::Literal(pass.to_string())));
         }
-        if machine { inputs.push(KeyNode::Input(KeySource::MachineGuid)); }
-        if user { inputs.push(KeyNode::Input(KeySource::DomainUser)); }
-        if date { inputs.push(KeyNode::Input(KeySource::CurrentDate)); }
+        if machine {
+            inputs.push(KeyNode::Input(KeySource::MachineGuid));
+        }
+        if user {
+            inputs.push(KeyNode::Input(KeySource::DomainUser));
+        }
+        if date {
+            inputs.push(KeyNode::Input(KeySource::CurrentDate));
+        }
         if inputs.is_empty() {
             inputs.push(KeyNode::Input(KeySource::Literal(String::new())));
         }
-        let mut node = if inputs.len() == 1 { inputs.pop().unwrap() } else { KeyNode::Concat(inputs) };
+        let mut node = if inputs.len() == 1 {
+            inputs.pop().unwrap()
+        } else {
+            KeyNode::Concat(inputs)
+        };
         if hash != 3 {
-            let algo = match hash { 1 => HashAlgo::Sha512, 2 => HashAlgo::Blake3, _ => HashAlgo::Sha256 };
+            let algo = match hash {
+                1 => HashAlgo::Sha512,
+                2 => HashAlgo::Blake3,
+                _ => HashAlgo::Sha256,
+            };
             node = KeyNode::Transform(KeyTransform::Hash(algo), Box::new(node));
         }
-        if b64 { node = KeyNode::Transform(KeyTransform::Base64Encode, Box::new(node)); }
+        if b64 {
+            node = KeyNode::Transform(KeyTransform::Base64Encode, Box::new(node));
+        }
         node
     }
 
     pub(crate) fn save_settings(&self) {
-        AppConfig { user_id: self.user_id.clone(), server_url: self.server_url.clone() }.save();
+        AppConfig {
+            user_id: self.user_id.clone(),
+            server_url: self.server_url.clone(),
+        }
+        .save();
     }
 
     pub(crate) fn open_loader(&self) -> Option<secunzip::runtime::RuntimeLoader> {
         if let Some(bytes) = &self.blackbox {
             secunzip::runtime::RuntimeLoader::from_bytes(bytes).ok()
         } else {
-            self.current_file.as_ref()
+            self.current_file
+                .as_ref()
                 .and_then(|f| secunzip::runtime::RuntimeLoader::from_file(f).ok())
         }
     }
@@ -184,7 +216,8 @@ impl SecUnzipApp {
     pub(crate) fn load_file_info(&mut self) {
         if let Some(bytes) = self.blackbox.clone() {
             if let Ok(loader) = secunzip::runtime::RuntimeLoader::from_bytes(&bytes) {
-                if let secunzip::core::AuthMode::Remote(server) = &loader.header().config.auth_mode {
+                if let secunzip::core::AuthMode::Remote(server) = &loader.header().config.auth_mode
+                {
                     self.server_url = server.clone();
                 }
                 if let Ok(exe) = std::env::current_exe() {
@@ -198,7 +231,9 @@ impl SecUnzipApp {
             }
             return;
         }
-        let Some(file) = self.current_file.clone() else { return };
+        let Some(file) = self.current_file.clone() else {
+            return;
+        };
         match secunzip::runtime::RuntimeLoader::from_file(&file) {
             Ok(loader) => {
                 let header = loader.header();
@@ -217,7 +252,11 @@ impl SecUnzipApp {
                     }
                 }
                 self.show_status(
-                    if self.is_admin { "文件已加载（你是此文件的管理员）" } else { "文件已加载" },
+                    if self.is_admin {
+                        "文件已加载（你是此文件的管理员）"
+                    } else {
+                        "文件已加载"
+                    },
                     false,
                 );
             }
@@ -227,7 +266,9 @@ impl SecUnzipApp {
 
     pub(crate) fn refresh_requests(&mut self) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async { api::list_requests(&self.server_url, &self.app_id, &self.secret).await });
+        let result = rt.block_on(async {
+            api::list_requests(&self.server_url, &self.app_id, &self.secret).await
+        });
         match result {
             Ok(requests) => {
                 *self.monitor.requests.lock().unwrap() = requests.clone();
@@ -239,18 +280,37 @@ impl SecUnzipApp {
     }
 
     pub(crate) fn start_server(&self) -> (String, bool) {
-        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(d) = &exe_dir {
             candidates.push(d.join("secunzip-server.exe"));
             candidates.push(d.join("deploy").join("server").join("secunzip-server.exe"));
-            candidates.push(d.join("..").join("server").join("target").join("release").join("secunzip-server.exe"));
-            candidates.push(d.join("..").join("server").join("target").join("debug").join("secunzip-server.exe"));
+            candidates.push(
+                d.join("..")
+                    .join("server")
+                    .join("target")
+                    .join("release")
+                    .join("secunzip-server.exe"),
+            );
+            candidates.push(
+                d.join("..")
+                    .join("server")
+                    .join("target")
+                    .join("debug")
+                    .join("secunzip-server.exe"),
+            );
         }
-        candidates.push(PathBuf::from("server\\target\\release\\secunzip-server.exe"));
+        candidates.push(PathBuf::from(
+            "server\\target\\release\\secunzip-server.exe",
+        ));
         candidates.push(PathBuf::from("deploy\\server\\secunzip-server.exe"));
         let Some(exe) = candidates.into_iter().find(|p| p.exists()) else {
-            return ("未找到 secunzip-server.exe（先运行 deploy\\install-windows.ps1 部署）".into(), true);
+            return (
+                "未找到 secunzip-server.exe（先运行 deploy\\install-windows.ps1 部署）".into(),
+                true,
+            );
         };
         match std::process::Command::new(&exe)
             .env("SECUNZIP_PORT", "8090")
@@ -263,7 +323,10 @@ impl SecUnzipApp {
                     Some(ip) => format!("接收方用 http://{}:8090 连接（请在下方连接向导填它，并放行防火墙 8090 端口）", ip),
                     None => "如需跨机，请在下方连接向导填可访问地址".to_string(),
                 };
-                (format!("服务端已在后台启动（绑定 0.0.0.0:8090）· {}", share), false)
+                (
+                    format!("服务端已在后台启动（绑定 0.0.0.0:8090）· {}", share),
+                    false,
+                )
             }
             Err(e) => (format!("启动服务端失败: {}", e), true),
         }
@@ -286,18 +349,34 @@ impl SecUnzipApp {
         // 服务器连通性预检：离线时明确引导，避免打包后才注册失败
         if !self.server_reachable() {
             self.mode = Mode::Settings;
-            self.show_status(&format!("服务器未连接（{}）：请在设置页「启动服务端」或核对地址", self.server_url), true);
+            self.show_status(
+                &format!(
+                    "服务器未连接（{}）：请在设置页「启动服务端」或核对地址",
+                    self.server_url
+                ),
+                true,
+            );
             return;
         }
         self.show_status("正在打包（压缩 + 加密 + 注册服务端）...", false);
         let has_input = !self.pack_key.trim().is_empty()
-            || self.pack_flow_machine || self.pack_flow_user || self.pack_flow_date;
+            || self.pack_flow_machine
+            || self.pack_flow_user
+            || self.pack_flow_date;
         let custom_key = if !has_input {
             None
         } else {
-            let node = Self::build_flow_node(&self.pack_key, self.pack_flow_machine, self.pack_flow_user,
-                self.pack_flow_date, self.pack_flow_hash, self.pack_flow_b64);
-            secunzip::key_derive::generate_key_from_flow(&node).ok().filter(|k| !k.is_empty())
+            let node = Self::build_flow_node(
+                &self.pack_key,
+                self.pack_flow_machine,
+                self.pack_flow_user,
+                self.pack_flow_date,
+                self.pack_flow_hash,
+                self.pack_flow_b64,
+            );
+            secunzip::key_derive::generate_key_from_flow(&node)
+                .ok()
+                .filter(|k| !k.is_empty())
         };
         let result = secunzip::cli::commands::pack_file(
             self.pack_sources.clone(),
@@ -318,14 +397,23 @@ impl SecUnzipApp {
                     );
                 } else {
                     self.show_status(
-                        &format!("打包完成但注册服务端失败（暂无法联网打开）· 文件ID {}", short),
+                        &format!(
+                            "打包完成但注册服务端失败（暂无法联网打开）· 文件ID {}",
+                            short
+                        ),
                         true,
                     );
                 }
                 // 记录到「我打包的文件」清单
-                let size = std::fs::metadata(&self.pack_output).map(|m| m.len()).unwrap_or(0);
+                let size = std::fs::metadata(&self.pack_output)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
                 let entry = PackedEntry {
-                    name: self.pack_output.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                    name: self
+                        .pack_output
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
                     path: self.pack_output.clone(),
                     app_id: out.app_id.clone(),
                     secret: secret_path.clone(),
@@ -344,7 +432,10 @@ impl SecUnzipApp {
 
     pub(crate) fn apply_pending_action(&mut self) {
         match self.pending_action.take() {
-            Some(Action::EnterDir(path)) => { self.cur_dir = path; self.preview_path = None; }
+            Some(Action::EnterDir(path)) => {
+                self.cur_dir = path;
+                self.preview_path = None;
+            }
             Some(Action::Preview(path)) => {
                 if let Some(vfs) = &self.vfs {
                     if let Ok(data) = vfs.read_file(&path) {
@@ -373,9 +464,13 @@ impl eframe::App for SecUnzipApp {
         *self.monitor.url.lock().unwrap() = self.server_url.clone();
         *self.monitor.app_id.lock().unwrap() = self.app_id.clone();
         *self.monitor.secret.lock().unwrap() = self.secret.clone();
-        let manage_active = self.state == AppState::Main && self.mode == Mode::Open
-            && self.open_tab == OpenTab::Manage && self.is_admin;
-        self.monitor.auto_requests.store(manage_active, Ordering::Relaxed);
+        let manage_active = self.state == AppState::Main
+            && self.mode == Mode::Open
+            && self.open_tab == OpenTab::Manage
+            && self.is_admin;
+        self.monitor
+            .auto_requests
+            .store(manage_active, Ordering::Relaxed);
         if manage_active {
             if let Ok(list) = self.monitor.requests.lock() {
                 self.pending_requests = list.clone();
@@ -392,31 +487,39 @@ impl eframe::App for SecUnzipApp {
         self.show_top_bar(ctx);
         self.show_status_bar(ctx);
 
-        egui::CentralPanel::default().frame(
-            egui::Frame::none()
-                .fill(theme::BG)
-                .inner_margin(egui::Margin::symmetric(20.0, 10.0)),
-        ).show(ctx, |ui| {
-            ui.add_space(6.0);
-            theme::centered(ui, CONTENT_MAX_W, |ui| {
-                match self.mode {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::symmetric(20.0, 10.0)),
+            )
+            .show(ctx, |ui| {
+                ui.add_space(6.0);
+                theme::centered(ui, CONTENT_MAX_W, |ui| match self.mode {
                     Mode::Open => self.show_open(ui),
                     Mode::Pack => self.show_pack(ui),
                     Mode::Settings => self.show_settings(ui),
-                }
+                });
             });
-        });
 
         self.apply_pending_action();
     }
 }
 
 pub(crate) fn short_id(id: &str) -> String {
-    if id.is_empty() { "—".into() } else { id[..8.min(id.len())].to_string() }
+    if id.is_empty() {
+        "—".into()
+    } else {
+        id[..8.min(id.len())].to_string()
+    }
 }
 
 pub(crate) fn human_size(size: usize) -> String {
-    if size < 1024 { format!("{} B", size) }
-    else if size < 1024 * 1024 { format!("{:.1} KB", size as f64 / 1024.0) }
-    else { format!("{:.1} MB", size as f64 / (1024.0 * 1024.0)) }
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
 }

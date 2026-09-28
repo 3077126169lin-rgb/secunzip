@@ -46,12 +46,15 @@ impl AppConfig {
         std::env::var("APPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join("SecUnzip").join("config.json")
+            .join("SecUnzip")
+            .join("config.json")
     }
 
     pub(crate) fn load() -> Option<AppConfig> {
         if let Ok(data) = std::fs::read_to_string(Self::config_path()) {
-            if let Ok(c) = serde_json::from_str(&data) { return Some(c); }
+            if let Ok(c) = serde_json::from_str(&data) {
+                return Some(c);
+            }
         }
         if let Ok(data) = std::fs::read_to_string(Self::legacy_config_path()) {
             if let Ok(c) = serde_json::from_str::<AppConfig>(&data) {
@@ -96,8 +99,12 @@ impl PackedEntry {
     }
     pub(crate) fn save_all(list: &[PackedEntry]) {
         let path = Self::registry_path();
-        if let Some(p) = path.parent() { let _ = std::fs::create_dir_all(p); }
-        if let Ok(j) = serde_json::to_string_pretty(list) { let _ = std::fs::write(path, j); }
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        if let Ok(j) = serde_json::to_string_pretty(list) {
+            let _ = std::fs::write(path, j);
+        }
     }
     pub(crate) fn add(entry: PackedEntry) {
         let mut list = Self::load_all();
@@ -111,4 +118,3 @@ impl PackedEntry {
         Self::save_all(&list);
     }
 }
-

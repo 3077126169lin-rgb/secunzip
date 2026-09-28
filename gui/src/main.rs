@@ -64,27 +64,28 @@ fn main() -> eframe::Result {
 
 fn setup_custom_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    
+
     // 尝试加载系统中文字体
     #[cfg(windows)]
     {
         let font_paths = [
-            "C:\\Windows\\Fonts\\msyh.ttc",     // 微软雅黑
-            "C:\\Windows\\Fonts\\simsun.ttc",    // 宋体
-            "C:\\Windows\\Fonts\\simhei.ttf",    // 黑体
+            "C:\\Windows\\Fonts\\msyh.ttc",   // 微软雅黑
+            "C:\\Windows\\Fonts\\simsun.ttc", // 宋体
+            "C:\\Windows\\Fonts\\simhei.ttf", // 黑体
         ];
-        
+
         for path in &font_paths {
             if let Ok(font_data) = std::fs::read(path) {
-                fonts.font_data.insert(
-                    "chinese".to_owned(),
-                    egui::FontData::from_owned(font_data),
-                );
-                fonts.families
+                fonts
+                    .font_data
+                    .insert("chinese".to_owned(), egui::FontData::from_owned(font_data));
+                fonts
+                    .families
                     .entry(egui::FontFamily::Proportional)
                     .or_default()
                     .insert(0, "chinese".to_owned());
-                fonts.families
+                fonts
+                    .families
                     .entry(egui::FontFamily::Monospace)
                     .or_default()
                     .insert(0, "chinese".to_owned());
@@ -92,7 +93,7 @@ fn setup_custom_fonts(ctx: &egui::Context) {
             }
         }
     }
-    
+
     ctx.set_fonts(fonts);
 }
 
@@ -157,7 +158,13 @@ fn write_to_parent_console(s: &str) {
             return;
         }
         let mut written = 0u32;
-        let _ = WriteFile(h, s.as_ptr(), s.len() as u32, &mut written, std::ptr::null_mut());
+        let _ = WriteFile(
+            h,
+            s.as_ptr(),
+            s.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        );
         let _ = CloseHandle(h);
     }
 }

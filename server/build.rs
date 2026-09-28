@@ -109,7 +109,10 @@ fn find_rc() -> Option<PathBuf> {
         let Some(base) = std::env::var_os(key) else {
             continue;
         };
-        let bin = PathBuf::from(base).join("Windows Kits").join("10").join("bin");
+        let bin = PathBuf::from(base)
+            .join("Windows Kits")
+            .join("10")
+            .join("bin");
         let Ok(entries) = std::fs::read_dir(&bin) else {
             continue;
         };

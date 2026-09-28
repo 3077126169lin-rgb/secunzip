@@ -1,4 +1,4 @@
-use axum::{Router, routing::post, Json, extract::State};
+use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
@@ -13,8 +13,8 @@ async fn main() {
 
     // 数据库位置：优先读 DATABASE_URL（部署脚本与 Docker 卷靠它指到数据盘），
     // 未设置时回落到工作目录下的 secunzip.db。仅处理 sqlite: 形式。
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:secunzip.db?mode=rwc".into());
+    let db_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:secunzip.db?mode=rwc".into());
     if let Some(rest) = db_url.strip_prefix("sqlite:") {
         let path = rest.split('?').next().unwrap_or("");
         if let Some(parent) = std::path::Path::new(path).parent() {
@@ -81,7 +81,10 @@ async fn main() {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("无法绑定 {}: {}（端口可能被占用，可设 SECUNZIP_PORT 环境变量换端口）", addr, e);
+            eprintln!(
+                "无法绑定 {}: {}（端口可能被占用，可设 SECUNZIP_PORT 环境变量换端口）",
+                addr, e
+            );
             std::process::exit(1);
         }
     };
@@ -202,7 +205,7 @@ struct GrantRequest {
     app_id: String,
     secret: String,
     user_id: String,
-    expires_at: Option<String>,  // YYYYMMDD 或 Nd
+    expires_at: Option<String>, // YYYYMMDD 或 Nd
 }
 
 #[derive(Deserialize)]
@@ -271,10 +274,20 @@ struct RequestItem {
 }
 
 fn ok(msg: &str) -> Json<ApiResponse> {
-    Json(ApiResponse { success: true, message: msg.into(), key: None, requests: None })
+    Json(ApiResponse {
+        success: true,
+        message: msg.into(),
+        key: None,
+        requests: None,
+    })
 }
 fn err(msg: &str) -> Json<ApiResponse> {
-    Json(ApiResponse { success: false, message: msg.into(), key: None, requests: None })
+    Json(ApiResponse {
+        success: false,
+        message: msg.into(),
+        key: None,
+        requests: None,
+    })
 }
 
 // ===== 处理函数 =====
@@ -287,16 +300,30 @@ fn err(msg: &str) -> Json<ApiResponse> {
 async fn register_app(State(db): State<Db>, Json(req): Json<RegisterRequest>) -> Json<ApiResponse> {
     let existing: Option<SqliteRow> = sqlx::query("SELECT secret FROM apps WHERE app_id = ?")
         .bind(&req.app_id)
-        .fetch_optional(&db).await.unwrap();
+        .fetch_optional(&db)
+        .await
+        .unwrap();
     if let Some(row) = existing {
         let stored: String = row.get("secret");
         if stored != req.secret {
-            log_audit(&db, &req.app_id, "", "register", false, "app_id 已被占用，拒绝覆盖").await;
+            log_audit(
+                &db,
+                &req.app_id,
+                "",
+                "register",
+                false,
+                "app_id 已被占用，拒绝覆盖",
+            )
+            .await;
             return err("该文件 ID 已被登记且密钥不匹配，拒绝覆盖");
         }
     }
     let now = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let allow_temp = if req.allow_temp.unwrap_or(false) { 1i64 } else { 0i64 };
+    let allow_temp = if req.allow_temp.unwrap_or(false) {
+        1i64
+    } else {
+        0i64
+    };
     sqlx::query("INSERT OR REPLACE INTO apps (app_id, secret, content_key, allow_temp, created_at) VALUES (?, ?, ?, ?, ?)")
         .bind(&req.app_id)
         .bind(&req.secret)
@@ -310,15 +337,25 @@ async fn register_app(State(db): State<Db>, Json(req): Json<RegisterRequest>) ->
 
 /// 验证管理员密钥
 async fn verify_secret(db: &Db, app_id: &str, secret: &str) -> bool {
-    let row: Option<SqliteRow> = sqlx::query("SELECT 1 as x FROM apps WHERE app_id = ? AND secret = ?")
-        .bind(app_id)
-        .bind(secret)
-        .fetch_optional(db).await.unwrap();
+    let row: Option<SqliteRow> =
+        sqlx::query("SELECT 1 as x FROM apps WHERE app_id = ? AND secret = ?")
+            .bind(app_id)
+            .bind(secret)
+            .fetch_optional(db)
+            .await
+            .unwrap();
     row.is_some()
 }
 
 /// 写审计日志（失败不阻断主流程）
-async fn log_audit(db: &Db, app_id: &str, user_id: &str, action: &str, success: bool, details: &str) {
+async fn log_audit(
+    db: &Db,
+    app_id: &str,
+    user_id: &str,
+    action: &str,
+    success: bool,
+    details: &str,
+) {
     let now = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
     let _ = sqlx::query("INSERT INTO audit_logs (app_id, user_id, action, success, details, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(app_id)
@@ -355,7 +392,9 @@ async fn revoke_user(State(db): State<Db>, Json(req): Json<GrantRequest>) -> Jso
     sqlx::query("DELETE FROM grants WHERE app_id = ? AND user_id = ?")
         .bind(&req.app_id)
         .bind(&req.user_id)
-        .execute(&db).await.unwrap();
+        .execute(&db)
+        .await
+        .unwrap();
     log_audit(&db, &req.app_id, &req.user_id, "revoke", true, "吊销成功").await;
     ok(&format!("已吊销 {}", req.user_id))
 }
@@ -365,12 +404,23 @@ async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiR
     // 管理员：凭 secret 直接取密钥，无需申请/授权
     if let Some(secret) = &req.secret {
         if verify_secret(&db, &req.app_id, secret).await {
-            let app: Option<SqliteRow> = sqlx::query("SELECT content_key FROM apps WHERE app_id = ?")
-                .bind(&req.app_id).fetch_optional(&db).await.unwrap();
+            let app: Option<SqliteRow> =
+                sqlx::query("SELECT content_key FROM apps WHERE app_id = ?")
+                    .bind(&req.app_id)
+                    .fetch_optional(&db)
+                    .await
+                    .unwrap();
             return match app {
-                Some(a) => { let key: String = a.get("content_key");
+                Some(a) => {
+                    let key: String = a.get("content_key");
                     log_audit(&db, &req.app_id, "admin", "key", true, "管理员取钥").await;
-                    Json(ApiResponse { success: true, message: "管理员".into(), key: Some(key), requests: None }) }
+                    Json(ApiResponse {
+                        success: true,
+                        message: "管理员".into(),
+                        key: Some(key),
+                        requests: None,
+                    })
+                }
                 None => err("应用不存在"),
             };
         }
@@ -383,10 +433,13 @@ async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiR
     let now = chrono::Utc::now().format("%Y%m%d").to_string();
 
     // 查授权
-    let grant: Option<SqliteRow> = sqlx::query("SELECT expires_at FROM grants WHERE app_id = ? AND user_id = ?")
-        .bind(&req.app_id)
-        .bind(user_id)
-        .fetch_optional(&db).await.unwrap();
+    let grant: Option<SqliteRow> =
+        sqlx::query("SELECT expires_at FROM grants WHERE app_id = ? AND user_id = ?")
+            .bind(&req.app_id)
+            .bind(user_id)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
 
     match grant {
         Some(g) => {
@@ -394,8 +447,11 @@ async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiR
             if let Some(exp) = &expires {
                 if now > *exp {
                     sqlx::query("DELETE FROM grants WHERE app_id = ? AND user_id = ?")
-                        .bind(&req.app_id).bind(user_id)
-                        .execute(&db).await.unwrap();
+                        .bind(&req.app_id)
+                        .bind(user_id)
+                        .execute(&db)
+                        .await
+                        .unwrap();
                     log_audit(&db, &req.app_id, user_id, "key", false, "授权已过期").await;
                     return err(&format!("权限已过期（{}）", exp));
                 }
@@ -411,13 +467,20 @@ async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiR
     // 下发 content_key
     let app: Option<SqliteRow> = sqlx::query("SELECT content_key FROM apps WHERE app_id = ?")
         .bind(&req.app_id)
-        .fetch_optional(&db).await.unwrap();
+        .fetch_optional(&db)
+        .await
+        .unwrap();
 
     match app {
         Some(a) => {
             let key: String = a.get("content_key");
             log_audit(&db, &req.app_id, user_id, "key", true, "下发密钥").await;
-            Json(ApiResponse { success: true, message: "成功".into(), key: Some(key), requests: None })
+            Json(ApiResponse {
+                success: true,
+                message: "成功".into(),
+                key: Some(key),
+                requests: None,
+            })
         }
         None => err("应用不存在"),
     }
@@ -426,9 +489,13 @@ async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiR
 /// 申请临时权限（用户）
 async fn request_access(State(db): State<Db>, Json(req): Json<AccessRequest>) -> Json<ApiResponse> {
     // 已授权则无需申请
-    let existing: Option<SqliteRow> = sqlx::query("SELECT 1 as x FROM grants WHERE app_id = ? AND user_id = ?")
-        .bind(&req.app_id).bind(&req.user_id)
-        .fetch_optional(&db).await.unwrap();
+    let existing: Option<SqliteRow> =
+        sqlx::query("SELECT 1 as x FROM grants WHERE app_id = ? AND user_id = ?")
+            .bind(&req.app_id)
+            .bind(&req.user_id)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
     if existing.is_some() {
         return ok("已有权限，直接打开即可");
     }
@@ -436,16 +503,28 @@ async fn request_access(State(db): State<Db>, Json(req): Json<AccessRequest>) ->
     // 检查是否开启临时申请
     let app: Option<SqliteRow> = sqlx::query("SELECT allow_temp FROM apps WHERE app_id = ?")
         .bind(&req.app_id)
-        .fetch_optional(&db).await.unwrap();
+        .fetch_optional(&db)
+        .await
+        .unwrap();
     match app {
-        Some(a) => { let at: Option<i64> = a.get("allow_temp"); if at.unwrap_or(0) == 0 { return err("该文件未开启临时权限申请"); } }
+        Some(a) => {
+            let at: Option<i64> = a.get("allow_temp");
+            if at.unwrap_or(0) == 0 {
+                return err("该文件未开启临时权限申请");
+            }
+        }
         None => return err("应用不存在"),
     }
 
     // 避免重复待审批
-    let pending: Option<SqliteRow> = sqlx::query("SELECT 1 as x FROM requests WHERE app_id = ? AND user_id = ? AND status = 'pending'")
-        .bind(&req.app_id).bind(&req.user_id)
-        .fetch_optional(&db).await.unwrap();
+    let pending: Option<SqliteRow> = sqlx::query(
+        "SELECT 1 as x FROM requests WHERE app_id = ? AND user_id = ? AND status = 'pending'",
+    )
+    .bind(&req.app_id)
+    .bind(&req.user_id)
+    .fetch_optional(&db)
+    .await
+    .unwrap();
     if pending.is_some() {
         return ok("已有待审批申请，请耐心等待");
     }
@@ -455,12 +534,23 @@ async fn request_access(State(db): State<Db>, Json(req): Json<AccessRequest>) ->
         .bind(&req.app_id).bind(&req.user_id)
         .bind(req.need_days).bind(&req.message).bind(&now)
         .execute(&db).await.unwrap();
-    log_audit(&db, &req.app_id, &req.user_id, "request", true, "提交临时权限申请").await;
+    log_audit(
+        &db,
+        &req.app_id,
+        &req.user_id,
+        "request",
+        true,
+        "提交临时权限申请",
+    )
+    .await;
     ok("已提交申请，请等待管理员审批")
 }
 
 /// 待审批列表（管理员查看：需该文件的 secret，且只返回本文件的申请）
-async fn list_requests(State(db): State<Db>, Json(req): Json<ListRequestsRequest>) -> Json<ApiResponse> {
+async fn list_requests(
+    State(db): State<Db>,
+    Json(req): Json<ListRequestsRequest>,
+) -> Json<ApiResponse> {
     if !verify_secret(&db, &req.app_id, &req.secret).await {
         return err("无权查看（密钥错误）");
     }
@@ -468,14 +558,22 @@ async fn list_requests(State(db): State<Db>, Json(req): Json<ListRequestsRequest
         .bind(&req.app_id)
         .fetch_all(&db).await.unwrap();
 
-    let requests: Vec<RequestItem> = rows.iter().map(|r| RequestItem {
-        user_id: r.get("user_id"),
-        need_days: r.get("need_days"),
-        message: r.get("message"),
-        created_at: r.get("created_at"),
-    }).collect();
+    let requests: Vec<RequestItem> = rows
+        .iter()
+        .map(|r| RequestItem {
+            user_id: r.get("user_id"),
+            need_days: r.get("need_days"),
+            message: r.get("message"),
+            created_at: r.get("created_at"),
+        })
+        .collect();
 
-    Json(ApiResponse { success: true, message: "成功".into(), key: None, requests: Some(requests) })
+    Json(ApiResponse {
+        success: true,
+        message: "成功".into(),
+        key: None,
+        requests: Some(requests),
+    })
 }
 
 /// 审计日志（管理员查看：需该文件的 secret）
@@ -486,30 +584,45 @@ async fn list_logs(State(db): State<Db>, Json(req): Json<LogsRequest>) -> Json<s
     let rows = sqlx::query("SELECT user_id, action, success, details, created_at FROM audit_logs WHERE app_id = ? ORDER BY id DESC LIMIT 200")
         .bind(&req.app_id)
         .fetch_all(&db).await.unwrap();
-    let logs: Vec<LogItem> = rows.iter().map(|r| LogItem {
-        user_id: r.get("user_id"),
-        action: r.get("action"),
-        success: r.get::<i64, _>("success") != 0,
-        details: r.get("details"),
-        created_at: r.get("created_at"),
-    }).collect();
+    let logs: Vec<LogItem> = rows
+        .iter()
+        .map(|r| LogItem {
+            user_id: r.get("user_id"),
+            action: r.get("action"),
+            success: r.get::<i64, _>("success") != 0,
+            details: r.get("details"),
+            created_at: r.get("created_at"),
+        })
+        .collect();
     Json(serde_json::json!({ "success": true, "message": "成功", "logs": logs }))
 }
 
 /// 审批通过（管理员）
-async fn approve_request(State(db): State<Db>, Json(req): Json<ApproveRequest>) -> Json<ApiResponse> {
+async fn approve_request(
+    State(db): State<Db>,
+    Json(req): Json<ApproveRequest>,
+) -> Json<ApiResponse> {
     if !verify_secret(&db, &req.app_id, &req.secret).await {
         return err("无权操作");
     }
 
-    let request: Option<SqliteRow> = sqlx::query("SELECT need_days FROM requests WHERE app_id = ? AND user_id = ? AND status = 'pending'")
-        .bind(&req.app_id).bind(&req.user_id)
-        .fetch_optional(&db).await.unwrap();
+    let request: Option<SqliteRow> = sqlx::query(
+        "SELECT need_days FROM requests WHERE app_id = ? AND user_id = ? AND status = 'pending'",
+    )
+    .bind(&req.app_id)
+    .bind(&req.user_id)
+    .fetch_optional(&db)
+    .await
+    .unwrap();
 
     let need_days: Option<i32> = request.and_then(|r| r.get("need_days"));
 
     // 计算过期时间：优先用管理员指定，否则按申请天数，再否则永久
-    let expires = req.expires_at.as_deref().map(parse_expire).flatten()
+    let expires = req
+        .expires_at
+        .as_deref()
+        .map(parse_expire)
+        .flatten()
         .or_else(|| need_days.map(|d| days_from_now(d as i64)));
 
     let now = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
@@ -545,8 +658,11 @@ async fn deny_request(State(db): State<Db>, Json(req): Json<ApproveRequest>) -> 
 fn parse_expire(input: &str) -> Option<String> {
     let input = input.trim();
     // 空 / 永久 / permanent → 无过期（永久授权）
-    if input.is_empty() || input == "永久" || input == "永久有效"
-        || input.eq_ignore_ascii_case("permanent") {
+    if input.is_empty()
+        || input == "永久"
+        || input == "永久有效"
+        || input.eq_ignore_ascii_case("permanent")
+    {
         return None;
     }
     if let Some(days) = input.strip_suffix('d').or_else(|| input.strip_suffix('D')) {
@@ -558,5 +674,7 @@ fn parse_expire(input: &str) -> Option<String> {
 }
 
 fn days_from_now(days: i64) -> String {
-    (chrono::Utc::now() + chrono::Duration::days(days)).format("%Y%m%d").to_string()
+    (chrono::Utc::now() + chrono::Duration::days(days))
+        .format("%Y%m%d")
+        .to_string()
 }

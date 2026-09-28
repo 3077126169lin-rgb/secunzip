@@ -3,7 +3,10 @@ use std::time::Duration;
 
 /// 服务器连通性检测（GET 根路径；任何 HTTP 响应视为在线，连接失败/超时视为离线）
 pub async fn ping_server(server: &str) -> bool {
-    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_secs(3)).build() else {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
         return false;
     };
     client.get(server).send().await.is_ok()
@@ -28,7 +31,8 @@ pub struct RequestInfo {
 /// 请求密钥（普通用户：需已授权）
 pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/key", server))
+    let resp = client
+        .post(format!("{}/api/key", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
@@ -37,7 +41,9 @@ pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<St
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     if data.success {
@@ -50,7 +56,8 @@ pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<St
 /// 管理员取密钥（凭 secret，免申请）
 pub async fn request_key_admin(server: &str, app_id: &str, secret: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/key", server))
+    let resp = client
+        .post(format!("{}/api/key", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -59,7 +66,9 @@ pub async fn request_key_admin(server: &str, app_id: &str, secret: &str) -> Resu
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     if data.success {
@@ -78,7 +87,8 @@ pub async fn request_access(
     message: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/request", server))
+    let resp = client
+        .post(format!("{}/api/request", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
@@ -89,7 +99,9 @@ pub async fn request_access(
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     Ok(data.message)
@@ -104,7 +116,8 @@ pub async fn grant_user(
     expires_at: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/grant", server))
+    let resp = client
+        .post(format!("{}/api/grant", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -115,7 +128,9 @@ pub async fn grant_user(
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     Ok(data.message)
@@ -129,7 +144,8 @@ pub async fn revoke_user(
     user_id: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/revoke", server))
+    let resp = client
+        .post(format!("{}/api/revoke", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -139,22 +155,31 @@ pub async fn revoke_user(
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     Ok(data.message)
 }
 
 /// 获取待审批列表（需该文件的 secret；服务端按 app_id 过滤）
-pub async fn list_requests(server: &str, app_id: &str, secret: &str) -> Result<Vec<RequestInfo>, String> {
+pub async fn list_requests(
+    server: &str,
+    app_id: &str,
+    secret: &str,
+) -> Result<Vec<RequestInfo>, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/requests", server))
+    let resp = client
+        .post(format!("{}/api/requests", server))
         .json(&serde_json::json!({ "app_id": app_id, "secret": secret }))
         .send()
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     if data.success {
@@ -173,7 +198,8 @@ pub async fn approve_request(
     expires_at: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/approve", server))
+    let resp = client
+        .post(format!("{}/api/approve", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -184,7 +210,9 @@ pub async fn approve_request(
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     Ok(data.message)
@@ -198,7 +226,8 @@ pub async fn deny_request(
     user_id: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{}/api/deny", server))
+    let resp = client
+        .post(format!("{}/api/deny", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -208,7 +237,9 @@ pub async fn deny_request(
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
 
-    let data: ApiResponse = resp.json().await
+    let data: ApiResponse = resp
+        .json()
+        .await
         .map_err(|e| format!("响应解析失败: {}", e))?;
 
     Ok(data.message)

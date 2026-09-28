@@ -1,6 +1,5 @@
 //! 设计系统：配色、主题、通用组件。
 
-
 use eframe::egui;
 
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x3b, 0x82, 0xf6);
@@ -48,7 +47,11 @@ pub fn apply(ctx: &egui::Context) {
 }
 
 /// 圆角卡片容器
-pub fn card<R>(ui: &mut egui::Ui, fill: egui::Color32, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+pub fn card<R>(
+    ui: &mut egui::Ui,
+    fill: egui::Color32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
     egui::Frame::none()
         .fill(fill)
         .rounding(egui::Rounding::same(14.0))
@@ -62,8 +65,13 @@ pub fn cta(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let w = ui.available_width().min(360.0);
     ui.add_sized(
         [w, 50.0],
-        egui::Button::new(egui::RichText::new(text).size(16.0).strong().color(egui::Color32::WHITE))
-            .fill(ACCENT),
+        egui::Button::new(
+            egui::RichText::new(text)
+                .size(16.0)
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .fill(ACCENT),
     )
 }
 
@@ -94,7 +102,12 @@ pub fn section_title(ui: &mut egui::Ui, no: &str, title: &str) {
             .rounding(egui::Rounding::same(12.0))
             .inner_margin(egui::Margin::same(6.0))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(no).size(12.0).strong().color(egui::Color32::WHITE));
+                ui.label(
+                    egui::RichText::new(no)
+                        .size(12.0)
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                );
             });
         ui.add_space(4.0);
         ui.label(egui::RichText::new(title).size(16.0).strong().color(TEXT));
@@ -109,10 +122,14 @@ pub fn centered(ui: &mut egui::Ui, max_w: f32, add: impl FnOnce(&mut egui::Ui)) 
     let pad = ((total - w) / 2.0).max(0.0);
     ui.horizontal(|ui| {
         ui.add_space(pad);
-        ui.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_min_width(w);
-            ui.set_max_width(w);
-            add(ui);
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(w, h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_min_width(w);
+                ui.set_max_width(w);
+                add(ui);
+            },
+        );
     });
 }

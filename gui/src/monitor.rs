@@ -1,9 +1,9 @@
 //! 后台监控线程：服务器连通性 + 待审批自动拉取。
 
+use crate::api;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::api;
 
 pub(crate) struct Monitor {
     pub(crate) url: Mutex<String>,
@@ -33,12 +33,15 @@ impl Monitor {
                     mm.server_up.store(0, Ordering::Relaxed);
                 } else {
                     let up = rt.block_on(api::ping_server(&url));
-                    mm.server_up.store(if up { 1 } else { 2 }, Ordering::Relaxed);
+                    mm.server_up
+                        .store(if up { 1 } else { 2 }, Ordering::Relaxed);
                     if up && mm.auto_requests.load(Ordering::Relaxed) {
                         let app_id = mm.app_id.lock().unwrap().clone();
                         let secret = mm.secret.lock().unwrap().clone();
                         if !app_id.is_empty() && !secret.is_empty() {
-                            if let Ok(list) = rt.block_on(api::list_requests(&url, &app_id, &secret)) {
+                            if let Ok(list) =
+                                rt.block_on(api::list_requests(&url, &app_id, &secret))
+                            {
                                 *mm.requests.lock().unwrap() = list;
                             }
                         }
