@@ -1,0 +1,5 @@
+# 使用 rustfmt 默认风格，这里只固化两项会被运行环境影响、进而导致 CI 与本地产生差异的选项。
+edition = "2021"
+max_width = 100
+# 强制 LF：Windows 上 rustfmt 默认跟随文件原有换行符，会与 .gitattributes 的 eol=lf 打架。
+newline_style = "Unix"
