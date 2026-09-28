@@ -1,7 +1,8 @@
 # SecUnzip 服务端接口
 
 Axum + SQLite，默认监听 `0.0.0.0:8090`（`SECUNZIP_PORT` 可覆盖）。
-除 `GET /`（连通性探测）外均为 `POST` + JSON。
+服务端注册 `GET /healthz`（存活探针）与 9 个 `POST` + JSON 接口，未注册 `GET /`。
+客户端的连通性探测请求根路径 `GET /`，只要收到任意 HTTP 响应（包括 Axum 对未注册路径返回的 404）即判定在线。
 
 ## 约定
 
@@ -23,6 +24,14 @@ Axum + SQLite，默认监听 `0.0.0.0:8090`（`SECUNZIP_PORT` 可覆盖）。
 见 [docs/design.md](docs/design.md)。
 
 ## 接口
+
+### GET /healthz
+
+存活探针，供容器编排 / 端口转发器使用。无需鉴权，无请求体，不访问数据库，固定返回 200。
+
+```json
+{"status":"ok"}
+```
 
 ### POST /api/register
 

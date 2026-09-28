@@ -207,6 +207,33 @@ fn post_json(port: u16, path: &str, body: Value) -> Value {
     })
 }
 
+/// 发一个 GET 请求，返回 (HTTP 状态码, 解析后的 JSON body)。
+///
+/// 与 post_json 一样手写原始 HTTP；因为健康检查要断言的正是状态行，
+/// 而 post_json 只把状态行丢掉、只返回 body，所以这里单列一个函数。
+fn get_json(port: u16, path: &str) -> (u16, Value) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("连接失败");
+    s.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    let req = format!(
+        "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        path
+    );
+    s.write_all(req.as_bytes()).unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).unwrap();
+    let head = String::from_utf8_lossy(&raw).to_string();
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("{} 的响应缺少状态行\n原文: {}", path, head));
+    let body = body_of(&raw);
+    let json = serde_json::from_slice(&body)
+        .unwrap_or_else(|e| panic!("{} 的响应不是 JSON: {}\n原文: {}", path, e, head));
+    (status, json)
+}
+
 fn register(port: u16, app: &str, secret: &str, content_key: &str, allow_temp: bool) {
     let r = post_json(
         port,
@@ -218,6 +245,16 @@ fn register(port: u16, app: &str, secret: &str, content_key: &str, allow_temp: b
 
 fn text(v: &Value, field: &str) -> String {
     v[field].as_str().unwrap_or_default().to_string()
+}
+
+// ===== 健康检查 =====
+
+#[test]
+fn test_healthz_returns_ok() {
+    let s = Server::start("healthz");
+    let (status, body) = get_json(s.port, "/healthz");
+    assert_eq!(status, 200, "健康检查应返回 200，实际 body: {}", body);
+    assert_eq!(body, json!({ "status": "ok" }));
 }
 
 // ===== 注册与防覆盖 =====

@@ -1,4 +1,8 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
@@ -65,6 +69,7 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/healthz", get(healthz))
         .route("/api/register", post(register_app))
         .route("/api/grant", post(grant_user))
         .route("/api/revoke", post(revoke_user))
@@ -291,6 +296,14 @@ fn err(msg: &str) -> Json<ApiResponse> {
 }
 
 // ===== 处理函数 =====
+
+/// 健康检查：容器编排 / 端口转发器用的存活探针。
+///
+/// 不访问数据库、不校验任何凭据，也不返回除固定状态外的信息，
+/// 因此不会因为库故障而失败，也不会泄露部署细节。
+async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
+}
 
 /// 注册应用（打包者调用）：存 app_id / secret / content_key / allow_temp
 ///
