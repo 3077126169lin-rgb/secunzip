@@ -176,7 +176,7 @@ fn test_xchacha20_encrypt_decrypt() {
     let encryptor = create_encryptor(&CryptoAlgo::XChaCha20);
 
     let key = vec![0x42u8; 32]; // 32字节密钥
-    let iv = vec![0x24u8; 12]; // 派生的 12 字节 nonce，后 12 字节补零
+    let iv = vec![0x24u8; 24]; // 派生的 24 字节 nonce，全部直接使用
     let plaintext = b"Hello, SecUnzip! XChaCha20 test.";
 
     let ciphertext = encryptor.encrypt(plaintext, &key, &iv).unwrap();
@@ -187,26 +187,71 @@ fn test_xchacha20_encrypt_decrypt() {
 }
 
 #[test]
-fn test_xchacha20_nonce_padding_mapping() {
-    // nonce 映射固定为 iv[0..12] || 0^12：同样的 12 字节必然得到同样的密文，
+fn test_encryptor_iv_key_lengths() {
+    // XChaCha20 必须使用原生 24 字节 nonce；其余算法长度保持不变
+    assert_eq!(create_encryptor(&CryptoAlgo::XChaCha20).iv_len(), 24);
+    assert_eq!(create_encryptor(&CryptoAlgo::XChaCha20).key_len(), 32);
+    assert_eq!(create_encryptor(&CryptoAlgo::ChaCha20).iv_len(), 12);
+    assert_eq!(create_encryptor(&CryptoAlgo::ChaCha20).key_len(), 32);
+    assert_eq!(create_encryptor(&CryptoAlgo::Aes256Gcm).iv_len(), 12);
+    assert_eq!(create_encryptor(&CryptoAlgo::Aes256Gcm).key_len(), 32);
+    // AES-256-CBC 的 IV 是 16 字节，不属于本次改动范围
+    assert_eq!(create_encryptor(&CryptoAlgo::Aes256Cbc).iv_len(), 16);
+    assert_eq!(create_encryptor(&CryptoAlgo::Aes256Cbc).key_len(), 32);
+}
+
+#[test]
+fn test_xchacha20_uses_full_24_byte_nonce() {
+    // 24 字节全部进入 XNonce：同样的 24 字节必然得到同样的密文，
     // 且与同 key 同 iv 的 ChaCha20（96 位 nonce）结果不同，证明确实走了扩展 nonce 变体。
     let x = create_encryptor(&CryptoAlgo::XChaCha20);
     let c = create_encryptor(&CryptoAlgo::ChaCha20);
 
     let key = vec![0x11u8; 32];
-    let iv = vec![0x22u8; 12];
+    let iv = vec![0x22u8; 24];
     let plaintext = b"nonce mapping";
 
     let a = x.encrypt(plaintext, &key, &iv).unwrap();
     let b = x.encrypt(plaintext, &key, &iv).unwrap();
     assert_eq!(a, b, "同一 nonce 必须得到相同密文");
 
-    let chacha = c.encrypt(plaintext, &key, &iv).unwrap();
+    let chacha = c.encrypt(plaintext, &key, &iv[..12]).unwrap();
     assert_ne!(a, chacha, "XChaCha20 不能退化成 ChaCha20");
 
     // 另一组 nonce 必须给出不同密文
-    let other = x.encrypt(plaintext, &key, &[0x23u8; 12]).unwrap();
+    let other = x.encrypt(plaintext, &key, &[0x23u8; 24]).unwrap();
     assert_ne!(a, other);
+}
+
+#[test]
+fn test_xchacha20_no_zero_padding_of_nonce() {
+    // 旧构造把 iv[0..12] 放到前 12 字节、后 12 字节补零，
+    // 因此前 12 字节相同、后 12 字节不同的两个 nonce 会给出相同密文。
+    // 现在 24 字节全部使用，二者必须不同 —— 这是补零已被移除的最强证据。
+    let x = create_encryptor(&CryptoAlgo::XChaCha20);
+    let key = vec![0x11u8; 32];
+    let plaintext = b"zero padding must be gone";
+
+    let mut iv_a = vec![0x55u8; 24];
+    let mut iv_b = vec![0x55u8; 24];
+    iv_b[12..].copy_from_slice(&[0xAAu8; 12]);
+
+    let a = x.encrypt(plaintext, &key, &iv_a).unwrap();
+    let b = x.encrypt(plaintext, &key, &iv_b).unwrap();
+    assert_ne!(
+        a, b,
+        "前 12 字节相同、后 12 字节不同的 nonce 必须产生不同密文（后 12 字节未被忽略）"
+    );
+
+    // 后 12 字节补零的 nonce 也不等于前 12 字节非零、后 12 字节全零的取值组合
+    iv_a[12..].copy_from_slice(&[0u8; 12]);
+    let zero_tail = x.encrypt(plaintext, &key, &iv_a).unwrap();
+    let mut zero_tail_ref = vec![0u8; 24];
+    zero_tail_ref[..12].copy_from_slice(&[0x55u8; 12]);
+    assert_eq!(
+        zero_tail,
+        x.encrypt(plaintext, &key, &zero_tail_ref).unwrap()
+    );
 }
 
 #[test]
@@ -214,9 +259,65 @@ fn test_xchacha20_rejects_wrong_nonce_len() {
     let encryptor = create_encryptor(&CryptoAlgo::XChaCha20);
     let key = vec![0x42u8; 32];
 
-    // 24 字节（原生 XNonce 长度）在产物格式里不出现，必须被拒绝
-    assert!(encryptor.encrypt(b"data", &key, &[0u8; 24]).is_err());
+    // 12 字节曾是旧构造接受的派生长度，现在必须被拒绝
+    assert!(
+        encryptor.encrypt(b"data", &key, &[0u8; 12]).is_err(),
+        "12 字节 IV 必须被拒绝，XChaCha20 使用 24 字节 nonce"
+    );
     assert!(encryptor.encrypt(b"data", &key, &[0u8; 16]).is_err());
+    assert!(encryptor.encrypt(b"data", &key, &[0u8; 32]).is_err());
+
+    // 长度校验在解密路径同样生效
+    assert!(encryptor.decrypt(b"data", &key, &[0u8; 12]).is_err());
+}
+
+#[test]
+fn test_xchacha20_rejects_wrong_key_len() {
+    let encryptor = create_encryptor(&CryptoAlgo::XChaCha20);
+    let iv = vec![0x42u8; 24];
+
+    assert!(encryptor.encrypt(b"data", &[0u8; 16], &iv).is_err());
+    assert!(encryptor.encrypt(b"data", &[0u8; 31], &iv).is_err());
+    assert!(encryptor.encrypt(b"data", &[0u8; 32], &iv).is_ok());
+}
+
+#[test]
+fn test_xchacha20_pack_open_roundtrip() {
+    // 走库的公共 pack/open 路径：产物头部不存 nonce，
+    // open 时按 iv_len()==24 现场派生，必须还原出原始字节。
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("source");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("a.txt"), "xchacha roundtrip payload").unwrap();
+    std::fs::write(src.join("b.bin"), [0u8, 1, 2, 3, 254, 255]).unwrap();
+    let out = temp.path().join("rt.secunzip");
+
+    let config = PackConfig {
+        format: OutputFormat::SecUnzip,
+        compress: CompressAlgo::Zip,
+        crypto: CryptoAlgo::XChaCha20,
+        hash: HashAlgo::Sha256,
+        key_derive: KeyNode::Input(KeySource::Literal("xchacha rt key".into())),
+        run_mode: RunMode::TempDir,
+        auth_mode: AuthMode::Local,
+        expire_at: None,
+        ip_whitelist: Vec::new(),
+        salt: b"xchacha rt salt 32 bytes long!!!".to_vec(),
+        app_id: None,
+        allow_temp: false,
+    };
+
+    PackBuilder::new(config, vec![src], out.clone())
+        .build()
+        .unwrap();
+
+    let loader = RuntimeLoader::from_file(&out).unwrap();
+    let vfs = loader.mount_vfs_with_key("xchacha rt key").unwrap();
+    assert_eq!(vfs.read_text("a.txt").unwrap(), "xchacha roundtrip payload");
+    assert_eq!(
+        vfs.read_file("b.bin").unwrap(),
+        &[0u8, 1, 2, 3, 254, 255][..]
+    );
 }
 
 #[test]

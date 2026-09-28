@@ -36,12 +36,13 @@ pub trait Hasher: Send + Sync {
 /// XChaCha20：ChaCha20 的扩展 nonce 变体，nonce 长度 24 字节。
 ///
 /// 产物头部不保存 nonce/IV：打包与打开都由 `derive_key_iv` 按 `iv_len()`
-/// 从密钥材料现场派生，因此这里 `iv_len()` 返回 12，派生方式与 ChaCha20 完全一致，
-/// 磁盘布局无需任何改动。
+/// 从密钥材料现场派生，这里 `iv_len()` 返回 24，与 XNonce 的原生长度一致。
 ///
-/// nonce 映射（唯一确定，双向一致）：把派生的 12 字节原样放到 24 字节 XNonce 的
-/// 前 12 字节，后 12 字节补零，即 nonce = iv[0..12] || 00 * 12。
-/// 不发明会改变存储布局的方案，旧产物格式不受影响。
+/// nonce 映射（唯一确定，双向一致）：派生的 24 字节全部原样作为 `XNonce`，
+/// 即 nonce = iv[0..24]。不补零、不截断。
+/// 注意：`iv_len` 由 12 改为 24 会改变同一密钥材料派生出的密钥与 nonce
+/// （`derive_key_iv` 的 PBKDF2 输出总长变了），因此新旧构造互不兼容；
+/// 该改动仅因 XChaCha20 从未随任何版本发布、磁盘上不存在旧构造产物才安全。
 ///
 /// XChaCha20 是流密码，密文不带认证标签：篡改密文不会被本层拒绝，
 /// 而是解出错误明文，由文件头的 SHA-256 `integrity_hash` 校验兜底。
@@ -54,17 +55,14 @@ impl Encryptor for XChaCha20Encryptor {
                 "XChaCha20 密钥必须 32 字节".into(),
             ));
         }
-        if iv.len() != 12 {
+        if iv.len() != 24 {
             return Err(crate::SecUnzipError::Crypto(
-                "XChaCha20 nonce 必须 12 字节（后 12 字节自动补零扩展为 24 字节）".into(),
+                "XChaCha20 nonce 必须 24 字节".into(),
             ));
         }
 
-        // 12 字节派生值 -> 24 字节 XNonce：前 12 字节原样，后 12 字节补零
-        let mut nonce = [0u8; 24];
-        nonce[..12].copy_from_slice(iv);
-
-        let mut cipher = chacha20::XChaCha20::new(key.into(), chacha20::XNonce::from_slice(&nonce));
+        // 派生的 24 字节全部直接作为 XNonce，不补零、不截断
+        let mut cipher = chacha20::XChaCha20::new(key.into(), chacha20::XNonce::from_slice(iv));
         let mut ciphertext = plaintext.to_vec();
         cipher.apply_keystream(&mut ciphertext);
         Ok(ciphertext)
@@ -79,8 +77,9 @@ impl Encryptor for XChaCha20Encryptor {
         32
     }
 
+    /// XChaCha20 原生 nonce 长度：24 字节，派生值全部使用
     fn iv_len(&self) -> usize {
-        12
+        24
     }
 
     fn algo_name(&self) -> &str {

@@ -45,9 +45,13 @@ impl Encryptor for Aes256CbcEncryptor {
 
         let decryptor = Aes256CbcDec::new(key.into(), iv.into());
         let mut buf = vec![0u8; ciphertext.len()];
+        // 故意把填充错误与"完整性校验失败"报成同一句话（同变体、同文案）：
+        // 若两者可区分，攻击者就能靠"填充是否合法"逐个字节地试探明文，即 padding oracle。
+        // 密文长度非法、填充非法在这里都会走到这个分支，因此都归为同一错误。
+        // 请勿为了"错误信息更精确"而改回带细节的文案——那会把 oracle 判别信号加回来。
         let pt_len = decryptor
             .decrypt_padded_b2b_mut::<Pkcs7>(ciphertext, &mut buf)
-            .map_err(|e| crate::SecUnzipError::Decrypt(format!("解密失败: {}", e)))?
+            .map_err(|_| crate::SecUnzipError::Decrypt("完整性校验失败".into()))?
             .len();
         buf.truncate(pt_len);
         Ok(buf)
