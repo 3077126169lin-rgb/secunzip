@@ -117,11 +117,43 @@ fn explain_io(e: &std::io::Error) -> String {
 }
 
 /// 根据算法创建压缩器
+///
+/// 每个变体都显式列出，不写 `_ =>` 兜底：以前 SevenZ/TarZst/TarGz 会静默落进
+/// ZIP 分支，用户以为拿到的是 7z，实际得到 ZIP —— 静默替换比报错更糟。
+/// 未实现的算法返回 `UnsupportedCompressor`，在真正打包/解包时给出中文错误。
 pub fn create_compressor(algo: &CompressAlgo) -> Box<dyn Compressor> {
     match algo {
         CompressAlgo::Store => Box::new(StoreCompressor),
-        // 其余统一用 ZIP（黑盒只支持一种打包格式）
-        _ => Box::new(ZipCompressor),
+        CompressAlgo::Zip => Box::new(ZipCompressor),
+        CompressAlgo::SevenZ => Box::new(UnsupportedCompressor("7z")),
+        CompressAlgo::TarZst => Box::new(UnsupportedCompressor("tar.zst")),
+        CompressAlgo::TarGz => Box::new(UnsupportedCompressor("tar.gz")),
+    }
+}
+
+/// 尚未实现的压缩算法占位实现。
+///
+/// `create_compressor` 的签名不返回 Result（调用方在 builder/loader 中据此调用），
+/// 因此把错误推迟到真正调用 compress_dir/decompress 时抛出。
+struct UnsupportedCompressor(&'static str);
+
+impl Compressor for UnsupportedCompressor {
+    fn compress_dir(&self, _dir: &Path) -> Result<Vec<u8>> {
+        Err(crate::SecUnzipError::Packing(format!(
+            "压缩算法 {} 尚未实现，请改用 Zip 或 Store",
+            self.0
+        )))
+    }
+
+    fn decompress(&self, _data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+        Err(crate::SecUnzipError::Unpacking(format!(
+            "压缩算法 {} 尚未实现",
+            self.0
+        )))
+    }
+
+    fn algo_name(&self) -> &str {
+        self.0
     }
 }
 

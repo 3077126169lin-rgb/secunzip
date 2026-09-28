@@ -62,7 +62,7 @@ impl KeyDeriveEngine {
     fn apply_transform(&self, transform: &KeyTransform, data: Vec<u8>) -> Result<Vec<u8>> {
         match transform {
             KeyTransform::Hash(algo) => {
-                let hasher = create_hasher(algo);
+                let hasher = create_hasher(algo)?;
                 Ok(hasher.hash(&data))
             }
 
@@ -82,7 +82,11 @@ impl KeyDeriveEngine {
                 Ok(result)
             }
 
-            KeyTransform::Concat => Ok(data), // Concat 在上层处理
+            // KeyTransform::Concat 没有语义：拼接多个节点由 KeyNode::Concat 承担，
+            // 该变换自身只是「输入原样返回」，静默成功会让用户以为拼接已生效。
+            KeyTransform::Concat => Err(crate::SecUnzipError::KeyDerivation(
+                "密钥派生变换 Concat 未定义：拼接多个输入请使用 KeyNode::Concat 节点".into(),
+            )),
 
             KeyTransform::Base64Encode => Ok(BASE64.encode(&data).into_bytes()),
 
