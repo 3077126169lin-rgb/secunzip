@@ -8,12 +8,13 @@
 
 受控内容分发工具。把文件打包成 `.secunzip`，接收方必须联网、且被授权，才能打开。
 
-内容先归档为 ZIP，再整体加密。加密密钥由服务端托管，打开时联网获取；默认在内存中解压浏览，不落盘。
+内容先归档为 ZIP，再整体加密。加密密钥由服务端托管，打开时联网获取——**取密钥需要凭据**：
+管理员用该文件的 `secret`，被授权者用授权时设定的口令。
 
 ```
-secunzip pack ./docs -o docs.secunzip --server http://192.168.1.10:8090
-secunzip grant docs.secunzip -u alice@example.com
-secunzip open  docs.secunzip -u alice@example.com
+secunzip pack   ./docs -o docs.secunzip --server http://192.168.1.10:8090
+secunzip grant  docs.secunzip -u alice@example.com --password '给 alice 的口令'
+secunzip open   docs.secunzip -u alice@example.com --password '给 alice 的口令'   # 加 --remember 可记住
 ```
 
 ## 架构
@@ -27,6 +28,7 @@ secunzip open  docs.secunzip -u alice@example.com
 
 头部是明文，依次为魔数、版本、格式、配置长度、bincode 序列化的打包配置、三段长度与明文的 SHA-256
 完整性哈希；其后是整段加密的数据。文件 ID 是对整个产物取 MD5，不由头部任何字段决定。
+逐字段的偏移、长度与编码规则（含黑盒 EXE 容器）见 [docs/format.md](docs/format.md)，那是权威格式规范。
 
 ## 实现状态
 
@@ -36,6 +38,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | 能力 | 状态 | 说明 |
 |------|------|------|
 | 打包、加密、服务端授权与密钥下发 | 已实现 | AES-256-GCM 为默认，`content_key` 由服务端托管 |
+| 取密钥的身份认证 | 已实现 | 每用户口令（PBKDF2-HMAC-SHA256、10 万轮、独立盐、恒定时间比较）；管理员路径用 `.secret`。**引入口令之前的旧授权会被拒绝，需重新授权** |
 | 内存只读浏览（CLI 与 GUI） | 已实现 | 默认不落盘，只有显式 `-o` 才解压到目录 |
 | WebDAV 挂载为盘符 | 已实现 | 回环地址上的只读 WebDAV，经系统自带 WebClient 映射，盘符自动选择 |
 | 服务端授权有效期、审批流、审计日志 | 已实现 | 服务端侧完整，含 schema 迁移与审计保留 |
@@ -71,7 +74,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [gui/](gui/) | 图形客户端（egui）：[theme.rs](gui/src/theme.rs) 设计系统、[icons.rs](gui/src/icons.rs) 手搓矢量图标、[model.rs](gui/src/model.rs) 状态与持久化、[monitor.rs](gui/src/monitor.rs) 后台监控、[views/](gui/src/views/) 各页面、[app.rs](gui/src/app.rs) 业务逻辑、[api.rs](gui/src/api.rs) HTTP 调用 |
 | [tests/](tests/) | 集成测试 |
 | [testdata/](testdata/) | 手工试用用的示例数据（见 [docs/demo.md](docs/demo.md)；自动化测试自建临时文件） |
-| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)、[复盘](docs/retrospective.md)，架构图与截图在 [docs/images/](docs/images/) |
+| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[格式规范](docs/format.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)、[复盘](docs/retrospective.md)，架构图与截图在 [docs/images/](docs/images/) |
 | [.github/](.github/) | [ci.yml](.github/workflows/ci.yml) 在提交与 PR 时跑格式检查、clippy 与测试；[release.yml](.github/workflows/release.yml) 打 tag 时产出并发布安装包 |
 | [deploy/](deploy/) | 部署脚本与 Docker，见 [deploy/README.md](deploy/README.md) |
 | [assets/](assets/) | 打包用的运行时占位资源 |
@@ -113,7 +116,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | 各 `mod.rs` | 模块声明与再导出：`src/core/`、`src/crypto/`、`src/key_derive/`、`src/packer/`、`src/runtime/`、`src/cli/`、`gui/src/views/` |
 | [src/main.rs](src/main.rs) | CLI 入口：解析子命令并分发 |
 | [src/core/types.rs](src/core/types.rs) | 核心类型：`PackConfig`、加解密/压缩/哈希算法枚举、`KeyNode` |
-| [src/core/config.rs](src/core/config.rs) | 打包产物头部 `PackHeader` 的读写与字段布局（bincode） |
+| [src/core/config.rs](src/core/config.rs) | 打包产物头部 `PackHeader` 的读写与字段布局（配置区为 bincode，其余字段手工按小端写入；逐字段定义见 [docs/format.md](docs/format.md)） |
 | [src/core/error.rs](src/core/error.rs) | 统一错误类型 `SecUnzipError` |
 | [src/crypto/traits.rs](src/crypto/traits.rs) | `Encryptor` / `Hasher` trait 与按算法创建实例的工厂 |
 | [src/crypto/aes.rs](src/crypto/aes.rs) | AES-256-CBC 与 AES-256-GCM 两种实现（GCM 为认证加密） |
@@ -126,7 +129,6 @@ secunzip open  docs.secunzip -u alice@example.com
 | [src/packer/compress.rs](src/packer/compress.rs) | ZIP 归档 |
 | [src/runtime/loader.rs](src/runtime/loader.rs) | 产物加载：校验完整性 → 解密 → 交给 VFS 或执行器 |
 | [src/runtime/vfs.rs](src/runtime/vfs.rs) | 内存虚拟文件系统：目录树、读取、文本/图片判定 |
-| [src/runtime/executor.rs](src/runtime/executor.rs) | 解压后运行：内存执行 / 临时目录 / 调用系统打开 |
 | [src/runtime/mount.rs](src/runtime/mount.rs) | 把 VFS 挂载为盘符或 WebDAV 服务 |
 | [src/runtime/selfextract.rs](src/runtime/selfextract.rs) | 黑盒 EXE 自解压：识别尾部标记并取出内嵌产物 |
 | [src/runtime/runpe.rs](src/runtime/runpe.rs) | 内存 EXE 执行（进程挖坑）；仅 `--features runpe` 时编译 |
@@ -179,6 +181,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [deploy/install-windows.ps1](deploy/install-windows.ps1)、[deploy/install-linux.sh](deploy/install-linux.sh) | 一键部署，并生成服务化脚本（NSSM / systemd） |
 | [docs/design.md](docs/design.md) | 设计文档 |
 | [docs/technical.md](docs/technical.md) | 技术方案清单 |
+| [docs/format.md](docs/format.md) | 格式规范：`.secunzip` 与黑盒 EXE 的逐字段布局、加密层参数、归档层与版本策略（权威格式规范） |
 | [docs/retrospective.md](docs/retrospective.md) | 复盘：站得住的设计、成了纸面的设计、缺陷的类型学、如果重来会怎么改 |
 | [docs/images/architecture.svg](docs/images/architecture.svg) | 系统与授权流程架构图（手写 SVG） |
 | [docs/images/artifact-format.svg](docs/images/artifact-format.svg) | 产物格式与头部字段图（手写 SVG） |
@@ -325,6 +328,7 @@ cd server && cargo test         # 服务端：30 个（3 个单元 + 27 个集�
 - [TESTING.md](TESTING.md) — 测试范围与手工验证
 - [docs/design.md](docs/design.md) — 设计：架构、产物格式、安全边界
 - [docs/technical.md](docs/technical.md) — 技术方案清单（全部选型与实现方案）
+- [docs/format.md](docs/format.md) — 格式规范：产物头部与容器的逐字段定义（权威格式规范）
 - [docs/retrospective.md](docs/retrospective.md) — 复盘：哪些设计站得住、哪些成了纸面、重来会怎么改
 - [ATTRIBUTION.md](ATTRIBUTION.md) — 第三方归属
 - [SECURITY.md](SECURITY.md) — 安全状态与已知风险

@@ -28,11 +28,13 @@
 | 头部字段 | [src/core/config.rs](../src/core/config.rs) | `magic`、`version`、`format`、`config`、`data_offset`、`data_size`、`original_size`、`integrity_hash` |
 | **枚举编码约束** | [src/core/types.rs](../src/core/types.rs) | 头部枚举按 bincode **变体序号**编码 → 新增算法必须**追加在枚举末尾**，插在中间会让旧文件解析成错误算法 |
 | 完整性校验 SHA-256 | [src/packer/builder.rs](../src/packer/builder.rs) | 存的是「归档明文」的哈希，位于**明文头部** → 只能检测损坏，**不是 MAC**；算法恒为 SHA-256，不读 `PackConfig.hash`（`builder.rs:66`） |
-| 头部字段只写不读 | [src/core/types.rs](../src/core/types.rs) `PackConfig` | `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 照原样序列化写入头部，但**没有任何代码读取**：头部 `ip_whitelist` 不参与任何校验（实际生效的是服务端 `apps.ip_whitelist` 列，见 §6）；`hash` 不影响校验算法；`run_mode` 不分支；`app_id` 恒为 `None`（`src/cli/commands.rs:104`）；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:137-161`） |
+| 头部字段只写不读 | [src/core/types.rs](../src/core/types.rs) `PackConfig` | `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 照原样序列化写入头部，但**没有任何代码读取**：头部 `ip_whitelist` 不参与任何校验（实际生效的是服务端 `apps.ip_whitelist` 列，见 §6）；`hash` 不影响校验算法；`run_mode` 不分支；`app_id` 恒为 `None`（`src/cli/commands.rs:104`）；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:160-161`） |
 | 文件 ID = 产物 MD5 | [src/crypto/hash.rs](../src/crypto/hash.rs)、[src/cli/commands.rs](../src/cli/commands.rs) | 内容寻址，**不写入文件头**，打开时由客户端重算 |
 | Remote 模式脱敏 | [src/packer/builder.rs](../src/packer/builder.rs) `header_config` | 头部 `key_derive` 字段被清空，`content_key` 绝不落文件（有单测 `content_key_and_plaintext_never_in_file`） |
-| 黑盒 EXE 结构 | [src/packer/builder.rs](../src/packer/builder.rs) `build_exe` | `[runner][内嵌 .secunzip][trailer: offset u64 + MAGIC]`。runner = **打包进程自身的二进制**（`current_exe()`，`builder.rs:130`），GUI 与 CLI 都能产出黑盒 EXE：CLI 的 `pack --blackbox`（`src/cli/args.rs:34-36`）经 `pack_config` 把 `format` 置为 `Exe`（`src/cli/commands.rs:83-107`）；运行方在入口先只读末尾 16 字节做预筛，命中后交给库函数 `runtime::detect_self_extract` 判定并进入黑盒打开流程（`src/main.rs:77-96`、`src/runtime/selfextract.rs:19-33`），由 `cmd_blackbox` 取出内嵌产物、复用与 `open` 相同的联网取钥流程（`src/cli/commands.rs:176-194,199-267`）；argv 里出现已知子命令时仍按普通 CLI 解析（`src/main.rs:64-71`），工具自身功能不受影响。GUI 路径不变，仍是启动时自查尾部标记（`gui/src/app.rs:116-117`）。**内嵌**的 `.secunzip` 头部 `format` 由 `build_secunzip` 固定写成 `SecUnzip`（`builder.rs:159`），故双击后同样装载 VFS 浏览。取不到自身路径时回退到 `assets/runtime_stub.exe`（11 字节占位，`builder.rs:133`） |
+| 黑盒 EXE 结构 | [src/packer/builder.rs](../src/packer/builder.rs) `build_exe` | `[runner][内嵌 .secunzip][trailer: offset u64 + MAGIC]`。runner = **打包进程自身的二进制**（`current_exe()`，`builder.rs:130`），GUI 与 CLI 都能产出黑盒 EXE：CLI 的 `pack --blackbox`（`src/cli/args.rs:34-36`）经 `pack_config` 把 `format` 置为 `Exe`（`src/cli/commands.rs:83-107`）；运行方在入口先只读末尾 16 字节做预筛，命中后交给库函数 `runtime::detect_self_extract` 判定并进入黑盒打开流程（`src/main.rs:15-26`、`src/main.rs:91-110`、`src/runtime/selfextract.rs:19-33`），由 `cmd_blackbox` 取出内嵌产物、复用与 `open` 相同的联网取钥流程（`src/cli/commands.rs:190-212`）；argv 里出现已知子命令时仍按普通 CLI 解析（`src/main.rs:78-85`），工具自身功能不受影响。GUI 路径不变，仍是启动时自查尾部标记（`gui/src/app.rs:163-171`）。**内嵌**的 `.secunzip` 头部 `format` 由 `build_secunzip` 固定写成 `SecUnzip`（`builder.rs:159`），故双击后同样装载 VFS 浏览。取不到自身路径时回退到 `assets/runtime_stub.exe`（11 字节占位，`builder.rs:133`） |
 | 头部版本号 | [src/core/config.rs](../src/core/config.rs) | `FORMAT_VERSION` 常量，供将来格式升级判别 |
+
+逐字段的偏移、长度与编码规则（含黑盒 EXE 容器与版本兼容策略）见 [format.md](format.md)，那是权威格式规范。
 
 ## 3. 加密与密钥
 
@@ -40,11 +42,11 @@
 |------|---------|------|
 | 默认加密 **AES-256-GCM** | [src/crypto/aes.rs](../src/crypto/aes.rs) `Aes256GcmEncryptor` | 认证加密（密文尾部 16 字节 tag），可检测篡改；nonce 12 字节 |
 | 兼容 AES-256-CBC | [src/crypto/aes.rs](../src/crypto/aes.rs) `Aes256CbcEncryptor` | PKCS7 填充，IV 16 字节；旧文件仍可解密 |
-| 兼容 ChaCha20 / XChaCha20 | [src/crypto/chacha.rs](../src/crypto/chacha.rs)、[src/crypto/traits.rs](../src/crypto/traits.rs) `XChaCha20Encryptor` | 两者都是流密码；XChaCha20 的 `iv_len()` 为 12，派生的 12 字节 IV 放到 24 字节 XNonce 前半、后半补零（`traits.rs:63-66`），磁盘布局与 ChaCha20 一致 |
+| 兼容 ChaCha20 / XChaCha20 | [src/crypto/chacha.rs](../src/crypto/chacha.rs)、[src/crypto/traits.rs](../src/crypto/traits.rs) `XChaCha20Encryptor` | 两者都是流密码；XChaCha20 的 `iv_len()` 为 24，派生的 24 字节**全部**原样作为 `XNonce`（即 `iv[0..24]`），不补零、不截断（`traits.rs:64-65`、`traits.rs:80-83`）；它与 ChaCha20 的 nonce 长度不同，且 `iv_len` 参与第二级 PBKDF2 的输出总长，同一密钥材料派生出的 key 与 nonce 也不同，两者互不兼容 |
 | 算法派发 | [src/crypto/traits.rs](../src/crypto/traits.rs) `create_encryptor` | 解密时按**头部记录的算法**选择实现 → 新算法不破坏旧文件 |
-| 算法覆盖不完整 | [src/crypto/traits.rs](../src/crypto/traits.rs)、[src/crypto/hash.rs](../src/crypto/hash.rs)、[src/packer/compress.rs](../src/packer/compress.rs) | 已实现：`Aes256Cbc` / `Aes256Gcm` / `ChaCha20` / `XChaCha20`。未实现：`CryptoAlgo::Sm4Cbc` 由 `UnsupportedEncryptor` 在加解密时返回「SM4-CBC 尚未实现」（`traits.rs:96-136`），`HashAlgo::Sm3` 在工厂处返回「SM3 尚未实现」（`hash.rs:65-72`），`CompressAlgo::SevenZ` / `TarZst` / `TarGz` 在打包与解包时返回错误（`compress.rs:124-158`）。三处工厂都不写 `_ =>` 兜底，新增变体必须显式处理；既不再 panic，也不再静默替换算法 |
-| 密钥派生 PBKDF2-HMAC-SHA256 | [src/crypto/keywrap.rs](../src/crypto/keywrap.rs) | 10000 轮；输出拼接为 `key \|\| iv`（GCM 12B / CBC 16B） |
-| 密钥派生流程 KeyNode 树 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) | 节点类型：`Input` / `Transform`（`Hash` / `TakeFirst` / `TakeLast` / `AddSalt` / `Base64Encode` / `Base64Decode`）/ `Conditional` / `Concat`。**只在打包机器上求值一次**：`generate_key_from_flow`（`engine.rs:125`）把求值结果转成十六进制串作为 `content_key`；打开时不再求值该树 |
+| 算法覆盖不完整 | [src/crypto/traits.rs](../src/crypto/traits.rs)、[src/crypto/hash.rs](../src/crypto/hash.rs)、[src/packer/compress.rs](../src/packer/compress.rs) | 已实现：`Aes256Cbc` / `Aes256Gcm` / `ChaCha20` / `XChaCha20`。未实现：`CryptoAlgo::Sm4Cbc` 由 `UnsupportedEncryptor` 在加解密时返回「SM4-CBC 尚未实现」（`traits.rs:95-122`），`HashAlgo::Sm3` 在工厂处返回「SM3 尚未实现」（`hash.rs:65-72`），`CompressAlgo::SevenZ` / `TarZst` / `TarGz` 在打包与解包时返回错误（`compress.rs:182-216`）。三处工厂都不写 `_ =>` 兜底，新增变体必须显式处理；既不再 panic，也不再静默替换算法 |
+| 密钥派生 PBKDF2-HMAC-SHA256 | [src/crypto/keywrap.rs](../src/crypto/keywrap.rs) | 两级各 10000 轮，同一 `salt` 用两次；第二级输出拼接为 `key \|\| iv`，切分长度按算法的 `key_len` / `iv_len`：GCM 12B、CBC 16B、ChaCha20 12B、XChaCha20 24B |
+| 密钥派生流程 KeyNode 树 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) | 节点类型：`Input` / `Transform`（`Hash` / `TakeFirst` / `TakeLast` / `AddSalt` / `Base64Encode` / `Base64Decode`）/ `Conditional` / `Concat`。**只在打包机器上求值一次**：`generate_key_from_flow`（`engine.rs:129`）把求值结果转成十六进制串作为 `content_key`；打开时不再求值该树 |
 | 派生来源 | [src/key_derive/sources.rs](../src/key_derive/sources.rs) | `MachineGuid`（Windows 注册表，`sources.rs:25-39`）、`LocalIp`（连接 `8.8.8.8:80` 取 OS 选定出口网卡的地址，`sources.rs:49-64`）、`CurrentDate`（本机时钟 `YYYYMMDD`，`sources.rs:68-71`）、`DomainUser`（**只读 `USERNAME` / `USER` 环境变量，不读域名**，`sources.rs:74-89`）、`Salt`、`Literal`；`SteamId` 直接返回「尚未实现」错误（`sources.rs:14-19`）。这些来源都只在**打包时**参与求值，打开时一律不读取 |
 | `KeyTransform::Concat` 未定义 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) `apply_transform` | 返回「密钥派生变换 Concat 未定义」错误（`engine.rs:85-89`），不再原样返回冒充变换成功；拼接由上层 `KeyNode::Concat` 承担 |
 | content_key 生成 | [src/cli/commands.rs](../src/cli/commands.rs) `pack_file` | 优先用自定义流程，否则两个 UUIDv4 拼接（高熵） |
@@ -60,10 +62,10 @@
 | 运行模式 `RunMode` | [src/core/types.rs](../src/core/types.rs) | 随 `PackConfig` 用 bincode 写入产物头部；**当前版本不读取、不分支**（打开行为与它无关），三个变体仅为保持头部编码稳定，`Document` 无任何引用 |
 | 只读 WebDAV 挂载 | [src/runtime/mount.rs](../src/runtime/mount.rs) | 把内存 VirtualFS 在 `127.0.0.1` 随机端口以只读 WebDAV 服务出来；Windows 用系统自带 WebClient（`net use`）映射为盘符，非 Windows 只启动服务（`#[cfg(not(windows))]`） |
 | 不用真实 ISO 挂载 | 取舍 | `Mount-DiskImage` 只能挂载磁盘上已存在的镜像文件，用它必须先写明文到磁盘，与不落盘冲突；真正的内存盘需 WinFsp / Dokan 等文件系统驱动，超出零第三方运行时范围。故改用回环 WebDAV |
-| 自解压 EXE 运行 | [src/runtime/selfextract.rs](../src/runtime/selfextract.rs) | 识别尾部标记并解出内嵌 `.secunzip`；**已接入 CLI 与 GUI**：CLI 入口先只读末尾 16 字节预筛、命中后调 `detect_self_extract`（`src/main.rs:15-24,77-96`），GUI 启动时同样自查（`gui/src/app.rs:116-117`）；带已知子命令时仍按普通 CLI 解析 |
+| 自解压 EXE 运行 | [src/runtime/selfextract.rs](../src/runtime/selfextract.rs) | 识别尾部标记并解出内嵌 `.secunzip`；**已接入 CLI 与 GUI**：CLI 入口先只读末尾 16 字节预筛、命中后调 `detect_self_extract`（`src/main.rs:15-26,91-110`），GUI 启动时同样自查（`gui/src/app.rs:163-171`）；带已知子命令时仍按普通 CLI 解析 |
 | 内存 EXE 执行（RunPE） | [src/runtime/runpe.rs](../src/runtime/runpe.rs) | **未接入**：`run_pe_memory`（`runpe.rs:223`）在代码中无调用点，且 `#[cfg(all(windows, feature = "runpe"))]` 门控、默认不编译（`src/runtime/mod.rs:7-11`、`Cargo.toml:66-69`） |
-| 沙箱执行 | 无 | 没有沙箱隔离实现。`execute_sandbox`（`src/runtime/loader.rs:215-247`）会把文件**写入临时目录**再调 `explorer.exe` 打开，但它只挂在 `OutputFormat::Exe` 分支（`loader.rs:134-140`），而打包器写出的头部 `format` 恒为 `SecUnzip`（`builder.rs:159`），该分支实际不可达 |
-| 手动打开/定位文件 | [src/runtime/loader.rs](../src/runtime/loader.rs) | **不可达**：`execute_sandbox` 里的 `explorer.exe` 调用（`loader.rs:234-240`）随 `OutputFormat::Exe` 分支一起不可达（见上行）；`src/runtime/executor.rs` 内含 `explorer` / `xdg-open` 分支，但 `Executor` 全类型无调用点，不参与运行 |
+| 沙箱执行 | 无 | 没有沙箱隔离实现。`execute_sandbox`（`src/runtime/loader.rs:292-322`）会把文件**写入临时目录**再调 `explorer.exe` 打开，但它只挂在 `OutputFormat::Exe` 分支（`loader.rs:204-210`），而打包器写出的头部 `format` 恒为 `SecUnzip`（`builder.rs:159`），该分支实际不可达 |
+| 手动打开/定位文件 | [src/runtime/loader.rs](../src/runtime/loader.rs) | **不可达**：`execute_sandbox` 里的 `explorer.exe` 调用（`loader.rs:312-315`）随 `OutputFormat::Exe` 分支一起不可达（见上行）；先前另有 `src/runtime/executor.rs` 内含 `explorer` / `xdg-open` 分支，但 `Executor` 全类型无调用点，该文件已作为死代码整体删除，不参与运行 |
 
 ## 5. 授权模型
 
@@ -71,10 +73,10 @@
 |------|---------|------|
 | 按用户 ID 授权 | 全局 | 手机号/邮箱/任意 ID；非机器码，换设备仍可用 |
 | 联网取钥 | [src/cli/commands.rs](../src/cli/commands.rs) `cmd_open` | 打开时必须请求服务端；服务端地址取自文件头 `auth_mode` |
-| 认证模式 `AuthMode` | [src/core/types.rs](../src/core/types.rs) | 只有 `Remote(服务端URL)` 可用：`open` 遇到 `AuthMode::Local` 直接报错「本地模式不支持」（`src/cli/commands.rs:214-216`），GUI 也不产生 Local 文件 |
-| 授权有效期 | [server/src/main.rs](../server/src/main.rs) `parse_expire` | 实际生效的只有**服务端 grant** 的 `expires_at`：永久 / `Nd`（N 天后）/ `YYYYMMDD`；过期在被取钥时拒绝并删除该授权（`server/src/main.rs:446-471`）。**文件头 `expire_at` 未生效**：生产打包恒写 `None`（`src/cli/commands.rs:58`），`src/runtime/loader.rs:64,93,166` 的检查永不触发 |
-| content_key 与环境无关 | [src/runtime/loader.rs](../src/runtime/loader.rs) `extract_with_key` | 打开时服务端下发打包时确定的 `content_key` 字符串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥（`loader.rs:101-104`），不读取接收方的机器码 / 日期 / IP / 用户名 |
-| 密钥派生时机 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) `generate_key_from_flow` | KeyNode 树只在**打包机器上求值一次**（只有 GUI 会构造流程树：`gui/src/app.rs:377`；CLI 直接写死 `Literal` 字面量节点，`src/cli/commands.rs:55`），结果转成十六进制串即 `content_key` 并托管到服务端 |
+| 认证模式 `AuthMode` | [src/core/types.rs](../src/core/types.rs) | 只有 `Remote(服务端URL)` 可用：`open` 遇到 `AuthMode::Local` 直接报错「本地模式不支持」（`src/cli/commands.rs:231-233`），GUI 也不产生 Local 文件 |
+| 授权有效期 | [server/src/main.rs](../server/src/main.rs) `parse_expire` | 实际生效的只有**服务端 grant** 的 `expires_at`：永久 / `Nd`（N 天后）/ `YYYYMMDD`（`server/src/main.rs:1188-1214`）；过期在被取钥时拒绝并删除该授权（`server/src/main.rs:767-776`）。**文件头 `expire_at` 未生效**：生产打包恒写 `None`（`src/cli/commands.rs:101`），`src/runtime/loader.rs:127,156,236` 的检查永不触发 |
+| content_key 与环境无关 | [src/runtime/loader.rs](../src/runtime/loader.rs) `extract_with_key` | 打开时服务端下发打包时确定的 `content_key` 字符串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥（`loader.rs:164-165`），不读取接收方的机器码 / 日期 / IP / 用户名 |
+| 密钥派生时机 | [src/key_derive/engine.rs](../src/key_derive/engine.rs) `generate_key_from_flow` | KeyNode 树只在**打包机器上求值一次**（只有 GUI 会构造流程树：`gui/src/app.rs:546`；CLI 直接写死 `Literal` 字面量节点，`src/cli/commands.rs:98`），结果转成十六进制串即 `content_key` 并托管到服务端 |
 | 临时申请 + 审批 | [server/src/main.rs](../server/src/main.rs) `/api/request`、`/api/approve`、`/api/deny` | 打包时 `allow_temp` 决定是否开放；同一用户已有 pending 时去重 |
 | 管理操作凭据 | `.secret` 文件 / `SECUNZIP_SECRET` | `grant`/`revoke`/`approve`/`deny`/`requests`/`logs` 均需该文件的 secret |
 | 默认不落盘 | [src/runtime/vfs.rs](../src/runtime/vfs.rs) | 降低顺手复制 |
@@ -87,8 +89,8 @@
 | SQLite（**bundled**） | [server/Cargo.toml](../server/Cargo.toml) | sqlx 的 `sqlite` 特性开启 `libsqlite3-sys/bundled` → SQLite 源码编译进二进制，**不依赖系统 libsqlite3** |
 | 表结构 | [server/src/main.rs](../server/src/main.rs) `MIGRATIONS` | `apps`（含 `ip_whitelist` 列，JSON 数组文本）、`grants`、`requests`、`audit_logs` |
 | 索引 | [server/src/main.rs](../server/src/main.rs) `MIGRATIONS` | `idx_requests_app_status`、`idx_audit_app`（除主键外的二级索引） |
-| **迁移机制** | [server/src/main.rs](../server/src/main.rs) `migrate` | `PRAGMA user_version` + 顺序迁移表，当前 `SCHEMA_VERSION = 2`（`main.rs:110`）；每级语句幂等（`IF NOT EXISTS`）；v2 给 `apps` 补 `ip_whitelist` 列（`main.rs:155-159`）；库版本高于程序时拒绝启动 |
-| **来源 IP 白名单** | [server/src/main.rs](../server/src/main.rs) `check_source_ip`、`load_whitelist` | `/api/key` 在两种取钥路径之前用 `ConnectInfo<SocketAddr>` 的 TCP 对端地址校验（`main.rs:483-507`），不接受请求体自报的 IP；`/api/register` 注册时用 `valid_ip_entry` 拒绝非法与 IPv6 条目（`main.rs:790-793`）。未设或空数组 = 不限制；未命中返回「来源 IP … 不在该文件的 IP 白名单内，拒绝下发密钥」并写 `action=key`、`success=false` 审计；管理员路径同样受限；只实现 IPv4 单机与 CIDR，库中无法解析的存量值失败关闭（`main.rs:799-859`）。头部 `PackConfig.ip_whitelist` 不参与此处校验 |
+| **迁移机制** | [server/src/main.rs](../server/src/main.rs) `migrate` | `PRAGMA user_version` + 顺序迁移表，当前 `SCHEMA_VERSION = 3`（`main.rs:144`）；v1 建表语句幂等（`IF NOT EXISTS`），加列语句由 `column_exists` 兜底（`main.rs:227-235,248-253`）；v2 给 `apps` 补 `ip_whitelist` 列（`main.rs:193`），v3 给 `grants` / `requests` 补口令散列列 `pwd_salt` / `pwd_hash`（`main.rs:198-206`）；库版本高于程序时拒绝启动 |
+| **来源 IP 白名单** | [server/src/main.rs](../server/src/main.rs) `check_source_ip`、`load_whitelist` | `/api/key` 在两种取钥路径之前用 `ConnectInfo<SocketAddr>` 的 TCP 对端地址校验（`main.rs:1150-1179`），不接受请求体自报的 IP；`/api/register` 注册时用 `valid_ip_entry` 拒绝非法与 IPv6 条目（`main.rs:1100-1102`）。未设或空数组 = 不限制；未命中返回「来源 IP … 不在该文件的 IP 白名单内，拒绝下发密钥」并写 `action=key`、`success=false` 审计；管理员路径同样受限；只实现 IPv4 单机与 CIDR，库中无法解析的存量值失败关闭（`main.rs:1075-1097,1109-1136`）。头部 `PackConfig.ip_whitelist` 不参与此处校验 |
 | 审计日志 | [server/src/main.rs](../server/src/main.rs) `log_audit` | register/grant/revoke/key/request/approve/deny 全部落库 |
 | **审计保留策略** | [server/src/main.rs](../server/src/main.rs) `prune_audit` | 每个 `app_id` 只保留最近 N 条（默认 1000，`SECUNZIP_AUDIT_KEEP` 可覆盖）；启动时一次 + 每 6 小时一次 |
 | **备份** | [server/src/main.rs](../server/src/main.rs) `--backup` | 用 `VACUUM INTO` 生成一致性快照，**可在服务端运行中执行** |

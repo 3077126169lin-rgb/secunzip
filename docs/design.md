@@ -45,23 +45,25 @@ GUI 与 CLI 都能产出，产物 runner 自查尾部标记后进入打开流程
 
 ![产物格式](images/artifact-format.svg)
 
-文件头为明文，用 bincode 序列化 PackConfig，字段：magic、version、format、config、
-data_offset、data_size、original_size、integrity_hash。
+文件头为明文，字段依次是 magic、version、format、config、data_offset、data_size、
+original_size、integrity_hash；其中只有 `config` 区是 bincode 序列化的 `PackConfig`，
+其余字段由 `PackHeader::to_bytes` 手工按小端写入（`src/core/config.rs:38-57`）。
+逐字段的偏移、长度与编码规则以 [format.md](format.md) 为准（权威格式规范）。
 
 - 加密数据 = 源文件归档为 ZIP 后整体加密
 - 文件ID = 产物内容的 MD5（内容寻址），**不写入文件头**，打开时由客户端重算
 - `content_key` 不写入文件头，仅由服务端托管
 - Remote 模式下文件头中的 key_derive 字段被清空
 - `content_key` 是**打包时一次性确定的固定字符串**。密钥流程树只在**打包机器上求值一次**，而且只有 GUI 会构造它
-  （`gui/src/app.rs` 的 `generate_key_from_flow`，`app.rs:377`）；CLI 根本没有流程树，直接写死
+  （`gui/src/app.rs` 的 `generate_key_from_flow`，`app.rs:546`）；CLI 根本没有流程树，直接写死
   `KeyNode::Input(KeySource::Literal(随机生成的密钥串))`（`src/cli/commands.rs:42-44` 生成的是随机 UUID，
-  `commands.rs:55` 把它包成字面量节点）。求值结果转成十六进制串即 `content_key`，交给服务端托管；
+  `commands.rs:98` 在 `pack_config` 里把它包成字面量节点）。求值结果转成十六进制串即 `content_key`，交给服务端托管；
   打开时服务端原样下发该串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥
-  （`src/runtime/loader.rs:101-104`）。
+  （`src/runtime/loader.rs:164-165`）。
   **打开阶段不读取接收方的机器码、日期、IP 或用户名**，这些选项不构成对接收方环境的绑定，只决定打包时生成的密钥串本身。
 - 头部 `PackConfig` 里的 `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 会照原样序列化写入，但当前没有任何代码读取：
   `ip_whitelist` 从不校验；`hash` 不影响完整性校验（恒为 SHA-256，`src/packer/builder.rs:66`）；`run_mode` 不参与分支（见 §3.3）；
-  `app_id` 在打包路径上恒为 `None`；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:145-161`）。
+  `app_id` 在打包路径上恒为 `None`；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:160-161`）。
   头部 `ip_whitelist` 是**装饰性字段**：接收方掌握客户端二进制，客户端校验可被绕过，因此 IP 限制只在服务端取钥时强制执行
   （服务端自己的 `apps.ip_whitelist` 列，见 §5.2）。该字段因 bincode 头部编码稳定性的要求保留，不删除。
 
@@ -77,8 +79,8 @@ data_offset、data_size、original_size、integrity_hash。
 - 产物头部的 `run_mode` 字段随 `PackConfig` 写入头部，但当前版本不解码后分支，打开行为与它无关；
   `RunMode` 的三个变体仅为保持头部编码稳定而保留（见 [technical.md](technical.md) §4）。
 - EXE 黑盒产物并不走单独的运行时路径：`build_exe` 内嵌的头部把 `format` 固定写成 `SecUnzip`（`src/packer/builder.rs:159`），
-  所以双击后同样是装载 VFS 浏览。`src/runtime/loader.rs:134-140` 中 `OutputFormat::Exe` 分支调用的 `execute_sandbox`
-  （`loader.rs:215-247`）只在头部 format 字节为 0 时触发，打包器从不产出这种头部，该分支实际不可达；该函数本身是把文件
+  所以双击后同样是装载 VFS 浏览。`src/runtime/loader.rs:204-210` 中 `OutputFormat::Exe` 分支调用的 `execute_sandbox`
+  （`loader.rs:292-322`）只在头部 format 字节为 0 时触发，打包器从不产出这种头部，该分支实际不可达；该函数本身是把文件
   **写入临时目录**再用资源管理器打开，**不是内存执行、也不是沙箱隔离**；真正的内存执行（RunPE）未接入（见 §8）。
 
 不用真实 ISO 挂载的原因：Windows 的 `Mount-DiskImage` 只能挂载磁盘上已存在的镜像文件，
@@ -87,23 +89,36 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 
 ## 4. 授权流程
 
+取密钥需要凭据：管理员路径用该文件的 `secret`（打包时产出的 `.secret` 文件），普通用户路径用一个**每用户口令**，
+在授权时设定。
+
 直接授权：
 
 ```
-管理员: secunzip grant file -u <用户ID> [-e 7d]
-用户:   secunzip open  file -u <用户ID>
+管理员: secunzip grant file -u <用户ID> --password <口令> [-e 7d]
+用户:   secunzip open  file -u <用户ID> --password <口令>
 ```
 
-临时申请：
+临时申请（口令由申请者自己设定，审批时默认沿用）：
 
 ```
-用户:   secunzip request file -u <用户ID> --days 3
-管理员: secunzip approve file -u <用户ID>
+用户:   secunzip request file -u <用户ID> --days 3 --password <口令>
+管理员: secunzip approve file -u <用户ID>          # 留空 = 沿用申请者设定的口令
 ```
 
-`open` 只支持服务端认证：文件头为 `AuthMode::Local` 时直接报错拒绝（`src/cli/commands.rs:214-216`），GUI 也不产生此类文件。
-文件头里的 `expire_at` 在生产打包路径上恒为 `None`（`src/cli/commands.rs:58`），因此 `src/runtime/loader.rs:64,93,166` 的过期检查
-不会触发；实际生效的只有服务端下发的授权有效期，过期后服务端在取钥时拒绝并删除该授权（`server/src/main.rs:446-471`）。
+口令以 PBKDF2-HMAC-SHA256（10 万轮、每行独立随机盐）存于 `grants` 表，比较走恒定时间实现。
+
+**引入口令之前**，`/api/key` 只校验 `(app_id, user_id)` 是否存在授权行，而 `user_id` 是请求体里的一个字符串——
+知道某个已授权用户 ID 的人可以直接取走密钥，授权机制形同虚设。现在这条路径已被拒绝：口令为空的旧授权行
+一律拒绝取钥，并提示管理员重新授权（见 [../deploy/README.md](../deploy/README.md) 的升级一节）。
+这是本项目在「受控分发」这个目标上最关键的一处补强。
+
+客户端可以记住口令：CLI 的 `--remember` 或 GUI 的「记住口令」勾选框，在取密钥**成功后**才写入本机 `config.json`。
+该文件本就明文存放 `user_id` 与服务器地址，口令同样不做加密——代码注释如实写明这一点，不假装它是加密存储。
+
+`open` 只支持服务端认证：文件头为 `AuthMode::Local` 时直接报错拒绝（`src/cli/commands.rs:231-233`），GUI 也不产生此类文件。
+文件头里的 `expire_at` 在生产打包路径上恒为 `None`（`src/cli/commands.rs:101`），因此 `src/runtime/loader.rs:127,156,236` 的过期检查
+不会触发；实际生效的只有服务端下发的授权有效期，过期后服务端在取钥时拒绝并删除该授权。
 
 ## 5. 服务端
 
@@ -112,9 +127,9 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 | 接口 | 鉴权 |
 |------|------|
 | [`/api/register`](../API.md#post-apiregister) | app_id 已存在时须持相同 secret |
-| [`/api/key`](../API.md#post-apikey) | secret（管理员直取）或已授权的 user_id；两者都受该文件 ip_whitelist 限制 |
-| [`/api/grant`](../API.md#post-apigrant)、[`/api/revoke`](../API.md#post-apirevoke)、[`/api/approve`](../API.md#post-apiapprove)、[`/api/deny`](../API.md#post-apideny) | 该文件的 secret |
-| [`/api/request`](../API.md#post-apirequest) | 无，受该文件 allow_temp 限制 |
+| [`/api/key`](../API.md#post-apikey) | secret（管理员直取，免口令）或 user_id **加**授权时设定的口令；两者都受该文件 ip_whitelist 限制 |
+| [`/api/grant`](../API.md#post-apigrant)、[`/api/revoke`](../API.md#post-apirevoke)、[`/api/approve`](../API.md#post-apiapprove)、[`/api/deny`](../API.md#post-apideny) | 该文件的 secret；`grant` 必须带上用户口令，`approve` 可留空以沿用申请时的口令 |
+| [`/api/request`](../API.md#post-apirequest) | 无（临时申请本就是公开入口），受该文件 allow_temp 限制；须自带口令，`need_days` 必须为正整数 |
 | [`/api/requests`](../API.md#post-apirequests)、[`/api/logs`](../API.md#post-apilogs) | 该文件的 secret |
 
 请求/响应字段见 [../API.md](../API.md)。
@@ -150,12 +165,12 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 | 服务端 | Axum + SQLite |
 | GUI | egui |
 
-头部枚举中声明但不可用的算法：`CryptoAlgo::Sm4Cbc` 由占位加密器在加解密时返回「SM4-CBC 尚未实现」
-（`src/crypto/traits.rs:96-136`），`HashAlgo::Sm3` 在工厂处返回「SM3 尚未实现」（`src/crypto/hash.rs:65-72`）；
-`CompressAlgo::SevenZ`、`TarZst`、`TarGz` 在打包与解包时报错，不再静默回退为 ZIP（`src/packer/compress.rs:124-158`）。
+头部枚举中声明但不可用的算法：`CryptoAlgo::Sm4Cbc` 由占位加密器 `UnsupportedEncryptor` 在加解密时返回「SM4-CBC 尚未实现」
+（`src/crypto/traits.rs:95-122`），`HashAlgo::Sm3` 在工厂处返回「SM3 尚未实现」（`src/crypto/hash.rs:65-72`）；
+`CompressAlgo::SevenZ`、`TarZst`、`TarGz` 在打包与解包时报错，不再静默回退为 ZIP（`src/packer/compress.rs:182-216`）。
 `KeyTransform::Concat` 没有可用语义，现在返回「变换未定义」错误（`src/key_derive/engine.rs:85-89`，
 拼接由上层 `KeyNode::Concat` 处理）。这些路径一律返回中文错误，不再 panic，也不再静默替换算法。
-`CryptoAlgo::XChaCha20` 已实现（`src/crypto/traits.rs:48-89`）。
+`CryptoAlgo::XChaCha20` 已实现（`src/crypto/traits.rs:51-88`）。
 
 ## 7. 安全边界
 
@@ -187,8 +202,8 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 - [x] GUI 客户端
 - [x] 文件头部写入（Remote 模式下 key_derive 脱敏、content_key 不落文件）
 - [ ] 内存 EXE 执行（RunPE，`--features runpe` 开关化；默认构建不含）。未接入：`run_pe_memory`（`src/runtime/runpe.rs:223`）无调用点；
-  两条实际执行 EXE 的路径都先把文件落盘（`src/runtime/loader.rs:222-231` 写临时目录，`src/runtime/executor.rs:94-95` 写临时 EXE），
-  且 `src/runtime/executor.rs` 的 `Executor` 整体无调用点
+  如今唯一会实际执行 EXE 的路径是 `src/runtime/loader.rs` 的 `execute_sandbox`，它同样先把文件落盘（`src/runtime/loader.rs:301-307` 写临时目录）；
+  另一条同类路径 `Executor`（原 `src/runtime/executor.rs`）整体无调用点，已作为死代码整体删除
 - [x] 服务端安全加固（register 防覆盖、requests/logs 鉴权、审计日志、去 permissive CORS）
 - [x] AES-256-GCM 认证加密
 - [ ] TLS 传输；SHA-256 文件ID

@@ -2,12 +2,17 @@
 
 本示例演示如何使用 SecUnzip 完成一次受控内容分发：把一份资料打包加密，授权指定用户，对方联网取得密钥后打开，并校验内容一致。文中同时给出命令行与图形客户端的对应操作，所有命令输出均为实际运行结果。
 
+凭据模型：管理员用打包时生成的 `.secret` 管理文件（授权、审批、吊销），被授权者用管理员授权时为其设定的口令取密钥。口令可以用 `--password <口令>` 传入，也可以设置 `SECUNZIP_PASSWORD` 环境变量或从标准输入提供一行；`open` 加 `--remember` 可在第一次取到密钥之后把口令记入本地配置，之后同一用户在同一服务端打开时自动复用。
+
 ## 前置条件
 
 - 已构建三个可执行文件（见 [README](../README.md#构建)）
 - 服务端与客户端在同一网络内，且客户端能访问到服务端地址
 - 一个可写的空目录作为演示工作区
 - 图形客户端需要桌面环境
+- 文件管理员持有产物同目录下的 `.secret`；每位接收方持有管理员授权时为其设定的口令
+
+> 下文输出取自一次真实运行：`<路径>` 为工作区实际路径，`<文件路径>` 为产物在磁盘上的路径；该次运行服务端端口为 18123，本文命令统一用 8090，除地址不同外输出格式一致。
 
 ## 步骤
 
@@ -61,11 +66,32 @@
    输出：
 
    ```
+   [1/5] 压缩源文件...
+   [2/5] 派生密钥...
+   [3/5] 加密数据...
+   [4/5] 生成产物...
+   [5/5] 完成: <路径>\项目资料.secunzip
+   管理密钥已保存: <路径>\项目资料.secret
+
+   ═══════════════════════════════════════════════════════════
+   打包完成: <路径>\项目资料.secunzip
+   ═══════════════════════════════════════════════════════════
+
    管理信息（请妥善保管）:
-   文件ID:    6b197f530efccc54aa81cf2b046bc4cb  (打包文件的 MD5)
-   管理密钥:  18d9f652-681e-424a-8cf4-e1e6e8331703
-   服务端:    http://127.0.0.1:8090
+   文件ID:    07c568141c6b032700ad1d188224328c  (打包文件的 MD5)
+   管理密钥:  28ce340c-b661-43e5-a7ed-1aa9cb0db509
+   服务端:    http://127.0.0.1:18123
    临时申请:   已开启
+
+   授权用户:
+   secunzip grant <文件路径> --user <用户ID> --password <口令> [--expires 7d]
+
+   用户申请:
+   secunzip request <文件路径> --user <用户ID> --days 3 --password <口令>
+
+   查看申请:
+   secunzip requests <文件路径>
+   ═══════════════════════════════════════════════════════════
    ```
 
 3. 查看产物：
@@ -81,14 +107,18 @@
 
 ### 3. 授权接收方
 
+授权时由管理员为对方设定口令，这个口令就是对方之后 `open` 时使用的口令：
+
 ```bash
-secunzip grant 项目资料.secunzip -u demo@example.com
+secunzip grant 项目资料.secunzip -u alice --password 'alice-pw-1'
 ```
 
 ```
-授权用户 demo@example.com...
-已授权 demo@example.com
+授权用户 alice...
+已授权 alice
 ```
+
+管理员口令同样可用 `SECUNZIP_PASSWORD` 或标准输入一行提供；加 `--remember` 可在授权成功后把它记入本地配置。不提供口令时命令直接拒绝（见「常见问题」的 `缺少口令`）。
 
 指定有效期可加 `-e`：`-e 7d` 表示 7 天后过期，`-e 20261231` 表示指定日期，省略为永久。
 
@@ -97,15 +127,17 @@ secunzip grant 项目资料.secunzip -u demo@example.com
 1. 接收方执行：
 
    ```bash
-   secunzip open 项目资料.secunzip -u demo@example.com -o ./out
+   secunzip open 项目资料.secunzip -u alice --password 'alice-pw-1' -o ./out
    ```
 
    ```
    联网验证...
-   用户: demo@example.com
+   用户: alice
    验证通过，获取到解密密钥
-   解压完成: /tmp/demo/out
+   解压完成: ./out
    ```
+
+   加 `--remember` 时，只有在这次成功取到密钥之后才会把口令写入本地配置（本步未捕获加该选项的输出）；此后同一用户、同一服务端再次打开无需再传口令。
 
 2. 校验内容一致：
 
@@ -113,33 +145,54 @@ secunzip grant 项目资料.secunzip -u demo@example.com
    diff ./项目资料/说明.txt ./out/说明.txt && echo "内容一致"
    ```
 
-3. **未授权的用户打不开**：
+3. **未授权的用户打不开**（`carol` 从未被授权）：
 
    ```bash
-   secunzip open 项目资料.secunzip -u bob@example.com -o ./out2
+   secunzip open 项目资料.secunzip -u carol --password 'whatever'
    ```
 
    ```
    联网验证...
-   用户: bob@example.com
+   用户: carol
    未授权，请申请临时权限或联系管理员
    提示: 如果没有权限，可以申请临时权限:
+   secunzip request <文件路径> --user carol --days 3 --password <口令>
+   错误: 未授权，请申请临时权限或联系管理员
    ```
 
-> 这一步是整条链路的重点：**文件就在本地，但少了服务端那一次授权，就是打不开。**
+   最后一行 `错误: ...` 由统一错误处理打印到标准错误，进程退出码为 1；倒数第二行是工具自己给出的示例命令。
+
+4. **口令错误同样打不开**：
+
+   ```bash
+   secunzip open 项目资料.secunzip -u alice --password 'wrong-pw'
+   ```
+
+   ```
+   联网验证...
+   用户: alice
+   口令错误
+   提示: 如果没有权限，可以申请临时权限:
+   secunzip request <文件路径> --user alice --days 3 --password <口令>
+   错误: 口令错误
+   ```
+
+> 这一步是整条链路的重点：**文件就在本地，但少了服务端那一次授权，或者口令不对，就是打不开。**
 
 ### 5. 临时申请与审批
 
-1. 用户自助申请（需要打包时带 `--allow-temp`）：
+1. 用户自助申请（需要打包时带 `--allow-temp`）。申请者自己设定口令，审批通过后就用这个口令取密钥：
 
    ```bash
-   secunzip request 项目资料.secunzip -u bob --days 3 --message "想看一下资料"
+   secunzip request 项目资料.secunzip -u bob --days 3 --message "想看一下资料" --password 'bob-pw'
    ```
 
    ```
    申请临时权限...
    已提交申请，请等待管理员审批
    ```
+
+   `--days` 必须是正整数，`0` 或负数在本地就被拒绝，不会发出请求。
 
 2. 管理员查看待审批列表：
 
@@ -167,18 +220,22 @@ secunzip grant 项目资料.secunzip -u demo@example.com
    已通过 bob
    ```
 
+   不填 `--password` 表示沿用申请者申请时设定的口令（这里即 `bob-pw`），此时工具会先打印一行说明沿用申请者口令（该行本次未捕获，故不列出）；若要改用别的口令，加 `--password <新口令>` 覆盖，并可加 `--remember` 记住。
+
 4. 此时 bob 可以打开：
 
    ```bash
-   secunzip open 项目资料.secunzip -u bob -o ./outb
+   secunzip open 项目资料.secunzip -u bob --password 'bob-pw' -o ./outb
    # 验证通过，获取到解密密钥
    ```
+
+   若 bob 在 `request` 时加了 `--remember`，这里不传口令也能打开。
 
 5. 管理员吊销授权后，bob 再次打开会被拒绝：
 
    ```bash
    secunzip revoke 项目资料.secunzip -u bob
-   secunzip open   项目资料.secunzip -u bob -o ./outb2
+   secunzip open   项目资料.secunzip -u bob --password 'bob-pw' -o ./outb2
    ```
 
    ```
@@ -187,11 +244,13 @@ secunzip grant 项目资料.secunzip -u demo@example.com
    未授权，请申请临时权限或联系管理员
    ```
 
+   与第 4 步的未授权示例相同，后面还会打印示例提示行与 `错误: ...`，进程退出码为 1（本步完整输出未单独捕获）。
+
 > 吊销的边界要讲清楚：它只挡住**今后**的取密钥。如果 bob 在吊销前已经打开过并自行保存了密钥，那份内容他仍能解开。详见 [设计文档](design.md)。
 
 ### 6. 图形客户端
 
-命令行之外，日常使用建议用图形客户端；它与 CLI 共用同一套服务端与本地配置。
+命令行之外，日常使用建议用图形客户端；它与 CLI 共用同一套服务端与本地配置，记住的口令也互通。
 
 1. 启动客户端：
 
@@ -217,7 +276,9 @@ secunzip grant 项目资料.secunzip -u demo@example.com
 
 ## 备注
 
-- **安全边界**：传输为明文 HTTP，`content_key` 与 `secret` 会过网，只应部署在可信内网；客户端为解密必然拿到密钥，因此"授权一次 ≈ 永久可解密"。本项目定位是**提高顺手转发的成本，而非对抗有决心的攻击者**。
+- **安全边界**：传输为明文 HTTP，`content_key`、`secret` 与口令都会过网，只应部署在可信内网；客户端为解密必然拿到密钥，因此"授权一次 ≈ 永久可解密"。本项目定位是**提高顺手转发的成本，而非对抗有决心的攻击者**。
+- 口令按「文件 + 服务端 + 用户」记住：同一用户在 A 服务端记住的口令不会用于 B 服务端，同一用户在不同文件上的口令也互相独立；管理员口令单独存放，不与其混用。
+- 服务端交互失败（`grant` / `open` / `request` / `approve`）时进程退出码为 1，脚本里可以直接用退出码判断。
 - **勿外发 `.secret`**：它等于该文件的最高权限，可授权、吊销与审批。
 - **换端口**：服务端设 `SECUNZIP_PORT`；客户端在打包时用 `--server` 指定，旧产物仍指向旧地址。
 - **注册失败不留死文件**：打包时若连不上服务端，程序会**自动删除**刚生成的产物并报错，避免留下打不开的文件。
@@ -227,12 +288,18 @@ secunzip grant 项目资料.secunzip -u demo@example.com
 | 现象 | 原因 / 处理 |
 |------|------------|
 | `注册服务端失败，已清理打包产物` | 服务端未启动或地址不对。先 `curl http://127.0.0.1:8090/` 确认返回 404 |
-| 对方提示 `未授权` | 少了 `grant`，或对方未 `request` + 你 `approve`；注意打包时要带 `--allow-temp` |
+| `缺少口令：请用 --password <口令> 指定，或设置 SECUNZIP_PASSWORD 环境变量，或在标准输入提供一行口令` | `grant` / `request` / `open` 都必须有口令，缺失或留空即被拒绝并以退出码 1 结束。补上 `--password <口令>`，或设置 `SECUNZIP_PASSWORD`，或从标准输入提供一行。示例：`secunzip grant 项目资料.secunzip -u alice` 会打印该错误 |
+| `口令错误` | 口令与服务端登记的不一致。用 `--password <正确口令>` 重试；若是 `--remember` 记住的旧口令（管理员改过口令），旧口令会失效，需用新口令打开并重新 `--remember`。没有有效口令时可先 `request` 申请临时权限 |
+| `未授权，请申请临时权限或联系管理员` | 该用户没有有效授权，或授权已被吊销、已过期。管理员直接 `grant`，或由用户 `request` 后管理员 `approve`；自助申请要求打包时带 `--allow-temp` |
+| 旧版本的授权被拒绝 | 授权是在引入口令之前的版本创建的，服务端会拒绝该授权并要求管理员重新授权：用当前版本再 `grant` 一次并为其设定口令 |
 | `未找到密钥文件 xxx.secret` | 管理端命令需要 `.secret`。放回产物同目录，或设 `SECUNZIP_SECRET` 环境变量 |
 | 端口被占用 | 换 `SECUNZIP_PORT` 重新启动服务端，并重新打包 |
 
 ### 可进一步验证的项
 
-- 完整性：见 [TESTING.md](../TESTING.md) 的「重点回归项」与「服务端鉴权回归」表
+- 完整性：见 [TESTING.md](../TESTING.md) 的「重点回归项」与「服务端测试怎么写的」
+- 口令与退出码：`tests/cli_auth_test.rs` 覆盖口令解析优先级、申请天数校验、记住口令与失败退出码
 - 产物不含密钥与明文：`tests/security_test.rs` 中有断言
+- 解压不越界写文件：`tests/zip_slip_test.rs` 覆盖 `../` 与绝对路径条目
+- 头部版本：`tests/header_version_test.rs` 覆盖版本不一致时拒绝解析
 - 服务端接口字段与鉴权：见 [API.md](../API.md)
