@@ -61,7 +61,6 @@ SecUnzip 使用了以下开源组件。许可信息取自各 crate 自身的 `Ca
 | [`rand`](https://crates.io/crates/rand) | MIT OR Apache-2.0 |
 | [`chrono`](https://crates.io/crates/chrono) | MIT OR Apache-2.0 |
 | [`thiserror`](https://crates.io/crates/thiserror) | MIT OR Apache-2.0 |
-| [`anyhow`](https://crates.io/crates/anyhow) | MIT OR Apache-2.0 |
 | [`tracing`](https://crates.io/crates/tracing) | MIT |
 | [`tracing-subscriber`](https://crates.io/crates/tracing-subscriber) | MIT |
 | [`tempfile`](https://crates.io/crates/tempfile) | MIT OR Apache-2.0 |
