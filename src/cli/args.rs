@@ -30,6 +30,10 @@ pub enum Commands {
         /// 允许临时权限申请
         #[arg(long)]
         allow_temp: bool,
+
+        /// 生成黑盒自解压 EXE（双击运行，自查尾部标记后联网打开）
+        #[arg(long)]
+        blackbox: bool,
     },
 
     ///  打开 .secunzip 文件

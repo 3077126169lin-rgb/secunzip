@@ -43,24 +43,7 @@ pub fn pack_file(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string() + &uuid::Uuid::new_v4().to_string());
 
-    let config = PackConfig {
-        format: if blackbox {
-            OutputFormat::Exe
-        } else {
-            OutputFormat::SecUnzip
-        },
-        compress: CompressAlgo::Zip,
-        crypto: CryptoAlgo::Aes256Gcm,
-        hash: HashAlgo::Sha256,
-        key_derive: KeyNode::Input(KeySource::Literal(content_key.clone())),
-        run_mode: RunMode::TempDir,
-        auth_mode: AuthMode::Remote(server.clone()),
-        expire_at: None,
-        ip_whitelist: Vec::new(),
-        salt: rand::random::<[u8; 32]>().to_vec(),
-        app_id: None, // 文件 ID 用打包后文件的 MD5，不写入头部
-        allow_temp,
-    };
+    let config = pack_config(server.clone(), content_key.clone(), allow_temp, blackbox);
 
     let builder = PackBuilder::new(config, sources, output.clone());
     builder.build()?;
@@ -93,12 +76,43 @@ pub fn pack_file(
     })
 }
 
+/// 按 CLI 选项构造打包配置
+///
+/// blackbox = true 时产物为 EXE 格式（[runner][内嵌 .secunzip][尾部标记]），双击可自解压运行；
+/// 否则为自有 .secunzip 格式。
+pub fn pack_config(
+    server: String,
+    content_key: String,
+    allow_temp: bool,
+    blackbox: bool,
+) -> PackConfig {
+    PackConfig {
+        format: if blackbox {
+            OutputFormat::Exe
+        } else {
+            OutputFormat::SecUnzip
+        },
+        compress: CompressAlgo::Zip,
+        crypto: CryptoAlgo::Aes256Gcm,
+        hash: HashAlgo::Sha256,
+        key_derive: KeyNode::Input(KeySource::Literal(content_key)),
+        run_mode: RunMode::TempDir,
+        auth_mode: AuthMode::Remote(server),
+        expire_at: None,
+        ip_whitelist: Vec::new(),
+        salt: rand::random::<[u8; 32]>().to_vec(),
+        app_id: None, // 文件 ID 用打包后文件的 MD5，不写入头部
+        allow_temp,
+    }
+}
+
 /// 打包命令（CLI，打印结果）
 pub fn cmd_pack(
     sources: Vec<PathBuf>,
     output: PathBuf,
     server: String,
     allow_temp: bool,
+    blackbox: bool,
 ) -> Result<()> {
     let out = pack_file(
         sources,
@@ -106,7 +120,7 @@ pub fn cmd_pack(
         server.clone(),
         allow_temp,
         None,
-        false,
+        blackbox,
     )?;
 
     println!();
@@ -118,6 +132,9 @@ pub fn cmd_pack(
     println!("文件ID:    {}  (打包文件的 MD5)", out.app_id);
     println!("管理密钥:  {}", out.secret);
     println!("服务端:    {}", server);
+    if blackbox {
+        println!("产物类型:  黑盒自解压 EXE（双击运行；用户标识取自 --user / SECUNZIP_USER / 客户端配置）");
+    }
     if !out.registered {
         println!("注册服务端失败，文件暂无法联网打开");
     }
@@ -147,75 +164,162 @@ pub fn cmd_pack(
 /// 打开命令
 pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<()> {
     let loader = RuntimeLoader::from_file(&file)?;
-    let header = loader.header();
+    let app_id = get_app_id(&file)?;
+    open_remote(&loader, &app_id, &user, output, &file.display().to_string())
+}
 
-    match &header.config.auth_mode {
-        AuthMode::Remote(server) => {
-            println!("联网验证...");
-            println!("用户: {}", user);
+/// 黑盒自解压 EXE 入口
+///
+/// runner（打包工具自身）启动时自查尾部标记，命中后由 `main` 调用本函数：
+/// 取出内嵌 .secunzip → 内存载入 → 走与 `open` 相同的联网取密钥流程。
+/// 文件 ID 用 EXE 自身的 MD5，与打包时 `pack_file` 的算法一致。
+pub fn cmd_blackbox(
+    exe_path: &Path,
+    exe: &[u8],
+    user: Option<String>,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let embedded = crate::runtime::embedded_secunzip(exe)?;
+    let loader = RuntimeLoader::from_bytes(embedded)?;
+    let app_id = crate::crypto::md5_hex(exe);
+    let user = resolve_blackbox_user(user)?;
+    println!("黑盒自解压 EXE: {}", exe_path.display());
+    open_remote(
+        &loader,
+        &app_id,
+        &user,
+        output,
+        &exe_path.display().to_string(),
+    )
+}
 
-            let app_id = get_app_id(&file)?;
-
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let result = rt.block_on(async { request_key(server, &app_id, &user).await });
-
-            match result {
-                Ok(key) => {
-                    println!("验证通过，获取到解密密钥");
-                    match output {
-                        Some(dest) => {
-                            // 指定输出目录：解压落盘
-                            let files = match loader.extract_with_key(&key)? {
-                                crate::runtime::loader::ExtractResult::Files(f) => f,
-                                crate::runtime::loader::ExtractResult::Executed => {
-                                    println!("执行完成");
-                                    return Ok(());
-                                }
-                            };
-                            std::fs::create_dir_all(&dest)?;
-                            for (name, content) in files {
-                                let p = dest.join(&name);
-                                if let Some(parent) = p.parent() {
-                                    std::fs::create_dir_all(parent)?;
-                                }
-                                std::fs::write(p, content)?;
-                            }
-                            println!("解压完成: {}", dest.display());
-                        }
-                        None => {
-                            // 无输出：内存挂载，只读浏览（不落盘）
-                            let vfs = loader.mount_vfs_with_key(&key)?;
-                            println!();
-                            println!("═══════════════════════════════════════════════════════════");
-                            println!(
-                                "内存挂载（只读，未落盘）  文件数: {}  大小: {}",
-                                vfs.file_count(),
-                                human_size(vfs.total_size())
-                            );
-                            println!("═══════════════════════════════════════════════════════════");
-                            print_tree(&vfs, "", "");
-                            println!("═══════════════════════════════════════════════════════════");
-                            println!("加 --output <目录> 可解压到磁盘");
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("{}", e);
-                    println!("提示: 如果没有权限，可以申请临时权限:");
-                    println!(
-                        "secunzip request {} --user {} --days 3",
-                        file.display(),
-                        user
-                    );
-                    return Err(crate::SecUnzipError::Other(e));
-                }
-            }
-        }
+/// 联网取密钥并打开：CLI `open`（从文件）与黑盒 EXE（从内存）共用
+///
+/// hint_target 仅用于失败提示里拼出「申请临时权限」的命令行。
+fn open_remote(
+    loader: &RuntimeLoader,
+    app_id: &str,
+    user: &str,
+    output: Option<PathBuf>,
+    hint_target: &str,
+) -> Result<()> {
+    let server = match &loader.header().config.auth_mode {
+        AuthMode::Remote(server) => server.clone(),
         AuthMode::Local => {
             return Err(crate::SecUnzipError::Other("本地模式不支持".into()));
         }
+    };
+
+    println!("联网验证...");
+    println!("用户: {}", user);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(async { request_key(&server, app_id, user).await });
+
+    match result {
+        Ok(key) => {
+            println!("验证通过，获取到解密密钥");
+            match output {
+                Some(dest) => {
+                    // 指定输出目录：解压落盘
+                    let files = match loader.extract_with_key(&key)? {
+                        crate::runtime::loader::ExtractResult::Files(f) => f,
+                        crate::runtime::loader::ExtractResult::Executed => {
+                            println!("执行完成");
+                            return Ok(());
+                        }
+                    };
+                    std::fs::create_dir_all(&dest)?;
+                    for (name, content) in files {
+                        let p = dest.join(&name);
+                        if let Some(parent) = p.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(p, content)?;
+                    }
+                    println!("解压完成: {}", dest.display());
+                }
+                None => {
+                    // 无输出：内存挂载，只读浏览（不落盘）
+                    let vfs = loader.mount_vfs_with_key(&key)?;
+                    println!();
+                    println!("═══════════════════════════════════════════════════════════");
+                    println!(
+                        "内存挂载（只读，未落盘）  文件数: {}  大小: {}",
+                        vfs.file_count(),
+                        human_size(vfs.total_size())
+                    );
+                    println!("═══════════════════════════════════════════════════════════");
+                    print_tree(&vfs, "", "");
+                    println!("═══════════════════════════════════════════════════════════");
+                    println!("加 --output <目录> 可解压到磁盘");
+                }
+            }
+        }
+        Err(e) => {
+            println!("{}", e);
+            println!("提示: 如果没有权限，可以申请临时权限:");
+            println!("secunzip request {} --user {} --days 3", hint_target, user);
+            return Err(crate::SecUnzipError::Other(e));
+        }
     }
     Ok(())
+}
+
+/// 黑盒模式下解析用户标识：`--user` > 环境变量 SECUNZIP_USER > 客户端配置 config.json
+///
+/// 双击运行的黑盒 EXE 没有命令行参数，因此需要回退到本机已登录的客户端配置。
+fn resolve_blackbox_user(explicit: Option<String>) -> Result<String> {
+    let from_arg = explicit
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(u) = from_arg {
+        return Ok(u);
+    }
+    let from_env = std::env::var("SECUNZIP_USER")
+        .ok()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(u) = from_env {
+        return Ok(u);
+    }
+    if let Some(u) = config_user_id() {
+        return Ok(u);
+    }
+    Err(crate::SecUnzipError::Other(
+        "未找到用户标识。请用「黑盒EXE --user <用户ID>」运行，或设置 SECUNZIP_USER 环境变量，\
+         或先用客户端设置个人 ID（写入 %USERPROFILE%\\Documents\\SecUnzip\\config.json）"
+            .into(),
+    ))
+}
+
+/// 读取客户端配置文件里的 user_id（与 GUI 共用同一份配置，只读，不改写）
+fn config_user_id() -> Option<String> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        paths.push(
+            PathBuf::from(home)
+                .join("Documents")
+                .join("SecUnzip")
+                .join("config.json"),
+        );
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        paths.push(PathBuf::from(appdata).join("SecUnzip").join("config.json"));
+    }
+    for path in paths {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(u) = value["user_id"].as_str() {
+                    let u = u.trim();
+                    if !u.is_empty() {
+                        return Some(u.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 打印内存文件树（虚拟挂载效果）
