@@ -3914,7 +3914,7 @@ dependencies = [
 
 [[package]]
 name = "secunzip"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3946,7 +3946,7 @@ dependencies = [
 
 [[package]]
 name = "secunzip-gui"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "chrono",
  "eframe",
@@ -3962,12 +3962,14 @@ dependencies = [
 
 [[package]]
 name = "secunzip-server"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "axum",
  "chrono",
+ "pbkdf2",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
  "tracing-subscriber",

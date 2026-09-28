@@ -75,5 +75,5 @@ target\release\secunzip-gui.exe
 
 - [ ] `cargo test --workspace` 通过（73 项）
 - [ ] `cargo build --release --workspace` 成功
-- [ ] `installer.iss` 中的 `MyAppVersion` 与本次 tag 一致
+- [ ] 版本号已同步（三份 `Cargo.toml`、`installer.iss` 与 tag 一致）—— 这一条由发布工作流自动校验，不一致会直接失败
 - [ ] 实机走一遍：安装 → 启动客户端 → 打包/打开 → 从「应用」里卸载，确认 `unins000.exe` 生效

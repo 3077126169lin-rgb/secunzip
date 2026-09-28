@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "secunzip"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 description = "SecUnzip - 受控解压与内容交付工具"
 license = "MIT"
