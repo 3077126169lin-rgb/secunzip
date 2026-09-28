@@ -28,16 +28,15 @@ secunzip open  docs.secunzip -u alice@example.com
 | WebDAV 挂载为盘符 | 已实现 | 回环地址上的只读 WebDAV，经系统自带 WebClient 映射，盘符自动选择 |
 | 服务端授权有效期、审批流、审计日志 | 已实现 | 服务端侧完整，含 schema 迁移与审计保留 |
 | 安装包与 `.secunzip` 文件关联 | 已实现 | Windows |
-| 黑盒自解压 EXE | 部分实现 | 仅当产物由图形界面打包时可用；CLI 打包的产物双击只会跑出命令行报错 |
+| 黑盒自解压 EXE | 已实现 | GUI 与 CLI（`pack --blackbox`）都可产出；runner 是打包工具自身的二进制，启动时先自查尾部标记，命中即进入黑盒打开流程 |
 | 密钥派生流程（`KeyNode` 树） | 部分实现 | 流程只在**打包机**求值一次并冻结为密钥字符串；接收方的机器码、系统日期、IP、用户名在打开时不会被读取 |
 | 「沙箱 / 内存执行」EXE | 未实现 | 实际是写临时目录后调用资源管理器打开 |
 | RunPE 内存执行 | 未实现 | 有实现代码但零调用点，且默认不编译；设计文档曾把它标为已完成 |
-| IP 白名单 | 未实现 | 该字段会写进产物文件头，但没有任何代码检查它 |
+| IP 白名单 | 已实现（服务端强制） | `/api/key` 按 TCP 连接的对端地址校验，管理员同样受限；经 TCP 转发或反向代理访问时，服务端看到的是代理地址而非客户端地址 |
 | 本地认证模式（`AuthMode::Local`） | 未实现 | `open` 直接拒绝 |
 | 文件内有效期（`expire_at`） | 未实现 | 生产路径恒为空，只有服务端侧的授权有效期生效 |
 | 运行模式（沙箱 / 文档 / 落盘） | 未实现 | 字段只写不读，三种模式无行为差别 |
-| 算法矩阵 | 部分实现 | SM4、XChaCha20、SM3 调用即 panic；7z、tar.zst、tar.gz 静默按 ZIP 处理 |
-| 交互式命令行存根 | 未实现 | `src/runtime/stub.rs` 未声明为模块，不参与编译 |
+| 算法矩阵 | 部分实现 | XChaCha20 已实现；SM4、SM3 返回「尚未实现」错误而非 panic；7z、tar.zst、tar.gz 返回错误而非静默按 ZIP 处理 |
 
 各条的具体机制与证据见 [docs/design.md](docs/design.md) 与 [docs/technical.md](docs/technical.md)。
 
@@ -119,7 +118,6 @@ secunzip open  docs.secunzip -u alice@example.com
 | [src/runtime/mount.rs](src/runtime/mount.rs) | 把 VFS 挂载为盘符或 WebDAV 服务 |
 | [src/runtime/selfextract.rs](src/runtime/selfextract.rs) | 黑盒 EXE 自解压：识别尾部标记并取出内嵌产物 |
 | [src/runtime/runpe.rs](src/runtime/runpe.rs) | 内存 EXE 执行（进程挖坑）；仅 `--features runpe` 时编译 |
-| [src/runtime/stub.rs](src/runtime/stub.rs) | 黑盒 EXE 的交互式命令行存根 |
 | [src/cli/args.rs](src/cli/args.rs) | 子命令与参数定义（clap） |
 | [src/cli/commands.rs](src/cli/commands.rs) | 各命令实现与服务端 HTTP 调用 |
 
@@ -158,7 +156,9 @@ secunzip open  docs.secunzip -u alice@example.com
 | [assets/icon.ico](assets/icon.ico) | 应用图标（16–256 多尺寸，蓝底白锁），由 `build.rs` 嵌入 exe，安装包快捷方式亦指向它 |
 | [assets/runtime_stub.exe](assets/runtime_stub.exe) | 打包黑盒 EXE 时的编译期占位回退（11 字节，必须存在） |
 | [testdata/hello.txt](testdata/hello.txt)、[testdata/readme.md](testdata/readme.md) | 手工试用用的示例数据，可直接 `secunzip pack ./testdata -o t.secunzip` |
-| [tests/crypto_test.rs](tests/crypto_test.rs) | 加密往返、GCM 篡改检测、哈希与 KDF |
+| [tests/algorithm_test.rs](tests/algorithm_test.rs) | 未实现的压缩算法与密钥派生变换必须报错，不得静默替换或原样放行 |
+| [tests/cli_blackbox_test.rs](tests/cli_blackbox_test.rs) | `pack --blackbox` 参数解析、CLI 黑盒 EXE 的尾部标记与内嵌产物 |
+| [tests/crypto_test.rs](tests/crypto_test.rs) | 加密往返、GCM 篡改检测、XChaCha20、哈希与 KDF |
 | [tests/key_derive_test.rs](tests/key_derive_test.rs) | 派生流程节点求值与确定性 |
 | [tests/packer_test.rs](tests/packer_test.rs) | 打包/解包往返、有效期、错密钥、info |
 | [tests/security_test.rs](tests/security_test.rs) | content_key 不落文件、注册失败不留死文件、黑盒自解压 |
@@ -183,7 +183,7 @@ cargo build --release --workspace      # 一次构建三个 crate
 ## 命令
 
 ```
-secunzip pack <源路径...> -o <输出> --server <地址> [--allow-temp]
+secunzip pack <源路径...> -o <输出> --server <地址> [--allow-temp] [--blackbox]
 secunzip open <文件> -u <用户ID> [-o <解压目录>]
 secunzip grant <文件> -u <用户ID> [-e <有效期>]
 secunzip revoke <文件> -u <用户ID>
@@ -295,8 +295,8 @@ CLI 与 GUI 中含有 `#[cfg(not(windows))]` 分支，可编译到非 Windows �
 ## 测试
 
 ```
-cargo test                      # 核心库与 CLI：52 个
-cd server && cargo test         # 服务端：21 个，真实拉起进程打 HTTP 接口
+cargo test                      # 核心库与 CLI：73 个
+cd server && cargo test         # 服务端：30 个（3 个单元 + 27 个集成），真实拉起进程打 HTTP 接口
 ```
 
 见 [TESTING.md](TESTING.md)。

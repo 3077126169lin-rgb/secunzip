@@ -20,8 +20,9 @@
 2. 黑盒执行 — 用户看不到密钥、看不到文件路径
 3. 联网授权 — 必须联网获取密钥
 
-原则 2 的落地程度：密钥由服务端托管、解密在内存完成，用户不直接接触密钥；但「黑盒执行」目前**未实现**——
-内存 EXE 执行（RunPE）没有调用点（见 §8），EXE 黑盒产物只有从 GUI 打包、并由 GUI 自身双击运行时才可用（见 §3.3、[technical.md](technical.md) §2）。
+原则 2 的落地程度：密钥由服务端托管、解密在内存完成，用户不直接接触密钥；黑盒自解压 EXE 已经可用——
+GUI 与 CLI 都能产出，产物 runner 自查尾部标记后进入打开流程（见 §3.3、[technical.md](technical.md) §2）——
+但真正的内存 EXE 执行（RunPE）仍未接入，没有调用点（见 §8）。
 
 ### 2.2 用户标识
 
@@ -54,6 +55,8 @@ data_offset、data_size、original_size、integrity_hash。
 - 头部 `PackConfig` 里的 `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 会照原样序列化写入，但当前没有任何代码读取：
   `ip_whitelist` 从不校验；`hash` 不影响完整性校验（恒为 SHA-256，`src/packer/builder.rs:66`）；`run_mode` 不参与分支（见 §3.3）；
   `app_id` 在打包路径上恒为 `None`；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:145-161`）。
+  头部 `ip_whitelist` 是**装饰性字段**：接收方掌握客户端二进制，客户端校验可被绕过，因此 IP 限制只在服务端取钥时强制执行
+  （服务端自己的 `apps.ip_whitelist` 列，见 §5.2）。该字段因 bincode 头部编码稳定性的要求保留，不删除。
 
 因为文件ID 可被任何拿到产物的人公开推导，服务端 register 必须防覆盖（见 §5.2）。
 
@@ -102,7 +105,7 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 | 接口 | 鉴权 |
 |------|------|
 | [`/api/register`](../API.md#post-apiregister) | app_id 已存在时须持相同 secret |
-| [`/api/key`](../API.md#post-apikey) | secret（管理员直取）或已授权的 user_id |
+| [`/api/key`](../API.md#post-apikey) | secret（管理员直取）或已授权的 user_id；两者都受该文件 ip_whitelist 限制 |
 | [`/api/grant`](../API.md#post-apigrant)、[`/api/revoke`](../API.md#post-apirevoke)、[`/api/approve`](../API.md#post-apiapprove)、[`/api/deny`](../API.md#post-apideny) | 该文件的 secret |
 | [`/api/request`](../API.md#post-apirequest) | 无，受该文件 allow_temp 限制 |
 | [`/api/requests`](../API.md#post-apirequests)、[`/api/logs`](../API.md#post-apilogs) | 该文件的 secret |
@@ -117,6 +120,12 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
   算法记录在文件头，解密时按头部派发。注意 `CryptoAlgo` 在头部按 bincode 变体序号编码，
   **新增算法必须追加在枚举末尾**，否则旧文件会被解析成错误的算法。
 - **审计**：register / grant / revoke / key / request / approve / deny 全部落库。
+- **来源 IP 白名单**：`/api/register` 可带可选的 `ip_whitelist`，存于新增的 `apps.ip_whitelist` 列（JSON 数组，空 = 不限制）。
+  `/api/key` 下发密钥前用 TCP 连接的对端地址（`ConnectInfo<SocketAddr>`）校验，不接受请求体自报的 IP；
+  管理员 `secret` 路径同样受限——持 secret 者本就能重新注册改写白名单，绕行口子没有防锁定价值。
+  匹配只实现 IPv4 单机（`203.0.113.7`）与 CIDR（`203.0.113.0/24`，前缀 0–32）：非法条目、IPv6 条目在注册时拒绝入库；
+  库里若存在非法条目（只可能被人工改动）则忽略该条目并失败关闭；IPv6 来源地址在白名单非空时一律拒绝。
+  未命中的取钥不返回密钥，并写 `action=key`、`success=false` 的审计记录。
 - **数据库维护**：schema 用 `PRAGMA user_version` + 顺序迁移（语句幂等）；
   审计日志按「每个 app_id 最近 N 条」保留（默认 1000，启动时与每 6 小时各清理一次）；
   `secunzip-server --backup <文件>` 用 `VACUUM INTO` 在线生成一致性快照。
@@ -134,10 +143,12 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 | 服务端 | Axum + SQLite |
 | GUI | egui |
 
-头部枚举中声明但不可用的算法：`CryptoAlgo::Sm4Cbc`、`XChaCha20` 与 `HashAlgo::Sm3` 在派发处是 `unimplemented!()`
-（`src/crypto/traits.rs:41-42`、`src/crypto/hash.rs:65`），头部若记录这些算法会 panic；`CompressAlgo::SevenZ`、`TarZst`、`TarGz`
-静默回退为 ZIP（`src/packer/compress.rs:120-125`）；`KeyTransform::Concat` 是空操作（`src/key_derive/engine.rs:85`，
-拼接由上层 `KeyNode::Concat` 处理）。`src/core/config.rs:7` 的 `ProjectConfig` 无任何引用，是死代码。
+头部枚举中声明但不可用的算法：`CryptoAlgo::Sm4Cbc` 由占位加密器在加解密时返回「SM4-CBC 尚未实现」
+（`src/crypto/traits.rs:96-136`），`HashAlgo::Sm3` 在工厂处返回「SM3 尚未实现」（`src/crypto/hash.rs:65-72`）；
+`CompressAlgo::SevenZ`、`TarZst`、`TarGz` 在打包与解包时报错，不再静默回退为 ZIP（`src/packer/compress.rs:124-158`）。
+`KeyTransform::Concat` 没有可用语义，现在返回「变换未定义」错误（`src/key_derive/engine.rs:85-89`，
+拼接由上层 `KeyNode::Concat` 处理）。这些路径一律返回中文错误，不再 panic，也不再静默替换算法。
+`CryptoAlgo::XChaCha20` 已实现（`src/crypto/traits.rs:48-89`）。
 
 ## 7. 安全边界
 
@@ -154,6 +165,9 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
   但受 content_key 保密与 register 防覆盖限制，实际风险低。
 - 文件头无 MAC。篡改明文头会改变文件ID，服务端查不到该 ID；密文有 GCM tag 保护。
 - secret 比较非恒定时间；服务端无速率限制。
+- IP 白名单的可信度取决于服务端看到的来源地址：服务端绑 `0.0.0.0`，经 TCP 端口转发器或反向代理访问时，
+  它看到的是**代理的地址**而不是客户端的地址，白名单只在服务端被直连、或代理保留源地址时才有效；
+  否则所有请求会被当成来自同一个代理地址。头部 `PackConfig.ip_whitelist` 不参与此处校验（见 §3.2）。
 
 ## 8. 路线图
 
@@ -168,3 +182,36 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 - [x] 服务端安全加固（register 防覆盖、requests/logs 鉴权、审计日志、去 permissive CORS）
 - [x] AES-256-GCM 认证加密
 - [ ] TLS 传输；SHA-256 文件ID
+
+## 9. 未实现能力的替代方案
+
+以下能力在本文其他位置已标注为未实现。这里记录若要补上，可行的手段与各自的代价，避免后来者重新推导一遍。
+
+**环境指纹绑定（原设想的核心卖点之一）**
+
+原设想是打开时按接收方的机器码、系统日期、IP 或域用户派生密钥。现已确认打开阶段完全不读这些值
+（见 §3.3），密钥是打包时冻结的字符串。要让它在打开时真正生效，仅靠客户端自证没有意义——接收方控制
+客户端，指纹可以伪造。可行做法只有两条：
+
+- 注册式绑定：接收方先运行一次「打印本机指纹」的命令，把指纹交给管理员，管理员授权时录入服务端，
+  取密钥时服务端比对。代价是多一个线下环节，且换机即失效。
+- 短期或一次性密钥：服务端签发的密钥只在 N 分钟内有效、或只允许取用一次。代价是服务端要维护密钥状态
+  与过期清理，但收益比指纹绑定更直接。
+
+两者都不改变一个事实：密钥一旦下发就在接收方手里，指纹绑定与短期密钥都只是延后与收窄，不是阻止。
+
+**文件内有效期 `expire_at`**
+
+`runtime/loader.rs` 里有过期检查，但生产路径下该字段恒为空，检查不会触发（见 §3.3）。要让客户端侧过期
+生效，前提是先接上 `AuthMode::Local` 离线模式：产物用本地密钥打包、打开时在本地派生，服务端不参与，
+客户端过期检查才有意义。
+
+而 Remote 模式（当前唯一可用的模式）下，服务端的授权有效期**已经完整工作**：授权、审批、过期拒绝
+与过期清理都在服务端。所以对 Remote 而言该字段是冗余的——替代方案就是「用服务端的授权有效期，
+不要指望文件里的过期」；若要支持离线分发，则需先实现 Local 模式，顺带让该字段与头部 `key_derive` 复活。
+
+**运行模式 `RunMode`**
+
+变体保留只是为了头部编码稳定。三种语义里，「内存只读挂载」正是当前的实际行为，落盘与否由 `open -o`
+决定。因此可行的替代不是写新分支，而是把语义对齐到现状：当前默认行为即 `Document`，`-o` 即 `TempDir`，
+`Sandbox`（内存执行）对应 §8 中未接入的 RunPE。这属于改名与文档工作，不需要新逻辑。

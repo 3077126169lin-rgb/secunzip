@@ -4,6 +4,33 @@
 
 ## 未发布
 
+### 新增
+
+- **XChaCha20 加密**：此前头部枚举里有该变体但派发处是 `unimplemented!()`，现在用已有的 `chacha20` crate 实现。
+  派生的 12 字节 IV 原样放到 24 字节 XNonce 的前半、后半补零，`iv_len()` 保持 12，**磁盘格式不变**。
+- **CLI 黑盒自解压 EXE**：`pack` 新增 `--blackbox`，产物 runner 就是打包进程自身的二进制，
+  启动时先只读末尾 16 字节自查尾部标记，命中即进入黑盒打开流程（不再经过 clap）；
+  argv 里出现已知子命令时仍按普通 CLI 处理，工具自身功能不受影响。CLI 与 GUI 现在都能产出、也都能打开黑盒 EXE。
+- **来源 IP 白名单服务端强制**：`/api/register` 接受可选 `ip_whitelist`（IPv4 单机或 CIDR），
+  `/api/key` 用 TCP 连接的对端地址校验，未命中拒绝下发密钥并写失败审计；管理员不豁免。
+- IP 白名单单元测试 3 个、算法派发测试 `tests/algorithm_test.rs` 4 个、CLI 黑盒测试 `tests/cli_blackbox_test.rs` 3 个。
+
+### 变更
+
+- **测试从 82 个增至 103 个**：核心库与 CLI 73 个，服务端 30 个（3 个单元 + 27 个集成）。
+- 服务端 schema 升级到 v2：`apps` 表新增 `ip_whitelist` 列，v1 旧库启动时自动迁移，旧数据保留。
+
+### 修复
+
+- **未实现的算法不再 panic**：`Sm4Cbc` 与 `Sm3` 由 `unimplemented!()` 改为返回明确的「尚未实现」中文错误，
+  相关工厂不再写 `_ =>` 兜底，新增变体时必须显式处理。
+- **不再静默替换算法**：`CompressAlgo::SevenZ` / `TarZst` / `TarGz` 此前会静默按 ZIP 打包，
+  用户以为拿到 7z 实际得到 ZIP；现在直接返回错误。
+- **`KeyTransform::Concat` 不再假装成功**：此前是原样返回的空操作，现在返回「变换未定义」错误；
+  真正的拼接由 `KeyNode::Concat` 承担，行为不变。
+- 删除从未声明为模块、从未参与编译的死代码 `src/runtime/stub.rs`，以及 `src/core/config.rs` 中无引用的 `ProjectConfig`
+  （`PackHeader` 不受影响）。`assets/runtime_stub.exe` 是另一回事，仍是打包时的 11 字节占位回退，保留。
+
 ## 0.1.2 - 2026-09-28
 
 ### 变更

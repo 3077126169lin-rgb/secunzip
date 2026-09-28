@@ -32,9 +32,9 @@ cargo +stable-x86_64-pc-windows-gnu build --release
 ## 测试
 
 ```
-cargo test --workspace           # 全部，73 个
-cargo test -p secunzip           # 仅核心库与 CLI，52 个
-cargo test -p secunzip-server    # 仅服务端，21 个
+cargo test --workspace           # 全部，103 个
+cargo test -p secunzip           # 仅核心库与 CLI，73 个
+cargo test -p secunzip-server    # 仅服务端，30 个（3 单元 + 27 集成）
 ```
 
 用例分布与重点回归项见 [TESTING.md](TESTING.md)。改动加密、打包、密钥派生或服务端鉴权后，
