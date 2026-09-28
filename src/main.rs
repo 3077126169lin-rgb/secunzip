@@ -16,7 +16,9 @@ fn main() {
         if let Some((exe_path, exe)) = detect_self_extract_exe() {
             let user = flag_value(&args, &["--user", "-u"]);
             let output = flag_value(&args, &["--output", "-o"]).map(PathBuf::from);
-            let result = commands::cmd_blackbox(&exe_path, &exe, user, output);
+            let password = flag_value(&args, &["--password"]);
+            let remember = args.iter().skip(1).any(|a| a == "--remember");
+            let result = commands::cmd_blackbox(&exe_path, &exe, user, output, password, remember);
             // 双击运行时 stdout 是终端：结束后等一次回车，避免窗口一闪而过
             finish(result, true);
             return;
@@ -33,25 +35,37 @@ fn main() {
             allow_temp,
             blackbox,
         } => commands::cmd_pack(sources, output, server, allow_temp, blackbox),
-        Commands::Open { file, user, output } => commands::cmd_open(file, user, output),
+        Commands::Open {
+            file,
+            user,
+            output,
+            password,
+            remember,
+        } => commands::cmd_open(file, user, output, password, remember),
         Commands::Grant {
             file,
             user,
             expires,
-        } => commands::cmd_grant(file, user, expires),
+            password,
+            remember,
+        } => commands::cmd_grant(file, user, expires, password, remember),
         Commands::Revoke { file, user } => commands::cmd_revoke(file, user),
         Commands::Request {
             file,
             user,
             days,
             message,
-        } => commands::cmd_request(file, user, days, message),
+            password,
+            remember,
+        } => commands::cmd_request(file, user, days, message, password, remember),
         Commands::Requests { file } => commands::cmd_requests(file),
         Commands::Approve {
             file,
             user,
             expires,
-        } => commands::cmd_approve(file, user, expires),
+            password,
+            remember,
+        } => commands::cmd_approve(file, user, expires, password, remember),
         Commands::Deny { file, user } => commands::cmd_deny(file, user),
     };
 
