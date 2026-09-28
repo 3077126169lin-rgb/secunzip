@@ -37,7 +37,8 @@ secunzip open  docs.secunzip -u alice@example.com
 | [API.md](API.md) | 服务端 HTTP 接口参考 |
 | [TESTING.md](TESTING.md) | 测试范围、手工验证步骤与回归清单 |
 | [ATTRIBUTION.md](ATTRIBUTION.md) | 技术与第三方组件归属声明 |
-| [installer.iss](installer.iss) | Inno Setup 6 安装包脚本，产出 `SecUnzip-Setup.exe` |
+| [installer.iss](installer.iss) | Inno Setup 6 安装包脚本，产出 `SecUnzip-Setup.exe`（含卸载程序） |
+| [.github/workflows/release.yml](.github/workflows/release.yml) | 推 `v*` tag 时自动构建安装包并挂到 Release |
 
 **核心库与 CLI（`src/`）**
 
@@ -112,6 +113,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [docs/design.md](docs/design.md) | 设计文档 |
 | [docs/technical.md](docs/technical.md) | 技术方案清单 |
 | [docs/demo.md](docs/demo.md) | 演示脚本：可照着跑的完整流程与答辩要点 |
+| [docs/release.md](docs/release.md) | 发布与卸载说明 |
 
 ## 构建
 
@@ -219,8 +221,12 @@ CLI 与 GUI 中含有 `#[cfg(not(windows))]` 分支，可编译到非 Windows �
 - 创建开始菜单与（可选）桌面快捷方式
 - 可选注册 `.secunzip` 文件关联（写 HKCU）
 - 按用户安装（`PrivilegesRequired=lowest`），不需要管理员
+- 自带卸载程序：安装时生成 `unins000.exe`，并注册到 Windows「应用和功能」
 
 **安装包不安装任何依赖** —— 因为它打包的二进制本身没有依赖（见上）。
+
+发布产物的构成、卸载入口与构建方式见 [docs/release.md](docs/release.md)；
+推 `v*` tag 会触发 CI 自动构建并挂到 Release（`.github/workflows/release.yml`，尚未实跑验证）。
 
 ## 安全
 
@@ -244,7 +250,8 @@ cd server && cargo test
 
 ## 文档
 
-- [docs/demo.md](docs/demo.md) — 演示脚本：照着敲就能跑通的完整流程（含实际输出）
+- [docs/demo.md](docs/demo.md) — 演示脚本：照着敲就能跑通的完整流程（含实际输出与截图）
+- [docs/release.md](docs/release.md) — 发布与卸载：安装包内容、卸载入口、如何产出发布件
 - [API.md](API.md) — 服务端接口
 - [TESTING.md](TESTING.md) — 测试范围与手工验证
 - [docs/design.md](docs/design.md) — 设计：架构、产物格式、安全边界

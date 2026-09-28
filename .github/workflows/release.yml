@@ -1,0 +1,71 @@
+name: Release
+
+# 打 tag（如 v0.1.0）即自动构建并发布：
+#   - SecUnzip-Setup.exe（含卸载程序，见 docs/release.md）
+#   - 独立的 CLI 与服务端可执行文件
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows 安装包
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 用 MinGW 工具链，与项目本地构建保持一致：
+      # 产物只依赖系统 msvcrt.dll，不需要 VC++ Redistributable
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: 构建核心库与 CLI
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: 构建服务端
+        working-directory: server
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: 构建图形客户端
+        working-directory: gui
+        run: cargo build --release --target x86_64-pc-windows-gnu
+
+      # installer.iss 里的 [Files] 路径不含 target triple 子目录，这里归位
+      - name: 归位到 installer.iss 期望的路径
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path target\release, server\target\release, gui\target\release | Out-Null
+          Copy-Item target\x86_64-pc-windows-gnu\release\secunzip.exe        target\release\
+          Copy-Item server\target\x86_64-pc-windows-gnu\release\secunzip-server.exe server\target\release\
+          Copy-Item gui\target\x86_64-pc-windows-gnu\release\secunzip-gui.exe       gui\target\release\
+
+      - name: 安装 Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: 生成安装包
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+          Get-ChildItem output
+
+      - name: 发布
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            output/SecUnzip-Setup.exe
+            target/release/secunzip.exe
+            server/target/release/secunzip-server.exe
+          generate_release_notes: true
