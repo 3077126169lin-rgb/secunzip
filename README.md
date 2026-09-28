@@ -24,6 +24,94 @@ secunzip open  docs.secunzip -u alice@example.com
 | [assets/](assets/) | 打包用的运行时占位资源 |
 | [installer.iss](installer.iss) | Inno Setup 安装包脚本 |
 
+### 文件清单
+
+**根目录**
+
+| 文件 | 说明 |
+|------|------|
+| [Cargo.toml](Cargo.toml) / [Cargo.lock](Cargo.lock) | 核心库与 CLI 的依赖清单与锁定版本；含发布构建优化（LTO、strip） |
+| [.gitignore](.gitignore) | 忽略构建产物（`target/`、`output/`）与运行时数据（`*.db`、`*.secret`） |
+| [LICENSE](LICENSE) | MIT 许可证 |
+| [README.md](README.md) | 本文件 |
+| [API.md](API.md) | 服务端 HTTP 接口参考 |
+| [TESTING.md](TESTING.md) | 测试范围、手工验证步骤与回归清单 |
+| [ATTRIBUTION.md](ATTRIBUTION.md) | 技术与第三方组件归属声明 |
+| [installer.iss](installer.iss) | Inno Setup 6 安装包脚本，产出 `SecUnzip-Setup.exe` |
+
+**核心库与 CLI（`src/`）**
+
+| 文件 | 说明 |
+|------|------|
+| [src/lib.rs](src/lib.rs) | crate 根：声明并导出各模块 |
+| 各 `mod.rs` | 模块声明与再导出：`src/core/`、`src/crypto/`、`src/key_derive/`、`src/packer/`、`src/runtime/`、`src/cli/`、`gui/src/views/` |
+| [src/main.rs](src/main.rs) | CLI 入口：解析子命令并分发 |
+| [src/core/types.rs](src/core/types.rs) | 核心类型：`PackConfig`、加解密/压缩/哈希算法枚举、`KeyNode` |
+| [src/core/config.rs](src/core/config.rs) | 打包产物头部 `PackHeader` 的读写与字段布局（bincode） |
+| [src/core/error.rs](src/core/error.rs) | 统一错误类型 `SecUnzipError` |
+| [src/crypto/traits.rs](src/crypto/traits.rs) | `Encryptor` / `Hasher` trait 与按算法创建实例的工厂 |
+| [src/crypto/aes.rs](src/crypto/aes.rs) | AES-256-CBC 与 AES-256-GCM 两种实现（GCM 为认证加密） |
+| [src/crypto/chacha.rs](src/crypto/chacha.rs) | ChaCha20 实现 |
+| [src/crypto/hash.rs](src/crypto/hash.rs) | SHA-256/512、BLAKE3、MD5；文件 ID（产物 MD5）计算 |
+| [src/crypto/keywrap.rs](src/crypto/keywrap.rs) | PBKDF2-HMAC-SHA256 派生出加密密钥与 IV |
+| [src/key_derive/engine.rs](src/key_derive/engine.rs) | 密钥派生流程引擎：按 `KeyNode` 树确定性求值 |
+| [src/key_derive/sources.rs](src/key_derive/sources.rs) | 派生来源：机器码 / 本机 IP / 日期 / 域用户 / 字面量 / 盐 |
+| [src/packer/builder.rs](src/packer/builder.rs) | 打包主流程：归档 → 加密 → 写头部；黑盒 EXE 的组装 |
+| [src/packer/compress.rs](src/packer/compress.rs) | ZIP 归档 |
+| [src/runtime/loader.rs](src/runtime/loader.rs) | 产物加载：校验完整性 → 解密 → 交给 VFS 或执行器 |
+| [src/runtime/vfs.rs](src/runtime/vfs.rs) | 内存虚拟文件系统：目录树、读取、文本/图片判定 |
+| [src/runtime/executor.rs](src/runtime/executor.rs) | 解压后运行：内存执行 / 临时目录 / 调用系统打开 |
+| [src/runtime/mount.rs](src/runtime/mount.rs) | 把 VFS 挂载为盘符或 WebDAV 服务 |
+| [src/runtime/selfextract.rs](src/runtime/selfextract.rs) | 黑盒 EXE 自解压：识别尾部标记并取出内嵌产物 |
+| [src/runtime/runpe.rs](src/runtime/runpe.rs) | 内存 EXE 执行（进程挖坑）；仅 `--features runpe` 时编译 |
+| [src/runtime/stub.rs](src/runtime/stub.rs) | 黑盒 EXE 的交互式命令行存根 |
+| [src/cli/args.rs](src/cli/args.rs) | 子命令与参数定义（clap） |
+| [src/cli/commands.rs](src/cli/commands.rs) | 各命令实现与服务端 HTTP 调用 |
+
+**服务端（`server/`）**
+
+| 文件 | 说明 |
+|------|------|
+| [server/Cargo.toml](server/Cargo.toml) | 服务端依赖 |
+| [server/src/main.rs](server/src/main.rs) | 服务端全部逻辑：9 个接口、鉴权、审计、顺序迁移、审计保留、在线备份 |
+
+**图形客户端（`gui/`）**
+
+| 文件 | 说明 |
+|------|------|
+| [gui/Cargo.toml](gui/Cargo.toml) | GUI 依赖 |
+| [gui/src/main.rs](gui/src/main.rs) | 入口：窗口参数、中文字体加载、控制台输出处理；`--register` / `--unregister` |
+| [gui/src/app.rs](gui/src/app.rs) | 应用状态 `SecUnzipApp`、业务逻辑与渲染入口 |
+| [gui/src/theme.rs](gui/src/theme.rs) | 设计系统：配色、主题、通用组件（卡片 / 按钮 / 徽章 / 分区标题 / 居中列） |
+| [gui/src/icons.rs](gui/src/icons.rs) | 手搓矢量图标（`Painter` 绘制，无 emoji、无图标字体） |
+| [gui/src/model.rs](gui/src/model.rs) | 界面状态枚举与本地持久化（`config.json` / `packed.json`） |
+| [gui/src/monitor.rs](gui/src/monitor.rs) | 后台线程：服务器连通性探测与待审批自动拉取 |
+| [gui/src/api.rs](gui/src/api.rs) | 服务端 HTTP 调用 |
+| [gui/src/register.rs](gui/src/register.rs) | Windows 下注册 `.secunzip` 文件关联 |
+| [gui/src/views/chrome.rs](gui/src/views/chrome.rs) | 顶栏（页签 + 服务器状态灯）与底部状态栏 |
+| [gui/src/views/setup.rs](gui/src/views/setup.rs) | 首次使用的设置页 |
+| [gui/src/views/open.rs](gui/src/views/open.rs) | 打开页：文件选择器 / 我打包的文件 / 内容浏览 |
+| [gui/src/views/manage.rs](gui/src/views/manage.rs) | 管理此文件：授权、吊销、审批 |
+| [gui/src/views/pack.rs](gui/src/views/pack.rs) | 打包页 |
+| [gui/src/views/settings.rs](gui/src/views/settings.rs) | 设置页 |
+
+**资源、测试、部署与文档**
+
+| 文件 | 说明 |
+|------|------|
+| [assets/README.md](assets/README.md) | 资源目录说明 |
+| [assets/runtime_stub.exe](assets/runtime_stub.exe) | 打包黑盒 EXE 时的编译期占位回退（11 字节，必须存在） |
+| [testdata/hello.txt](testdata/hello.txt)、[testdata/readme.md](testdata/readme.md) | 示例数据（测试当前自建临时文件，未引用此目录） |
+| [tests/crypto_test.rs](tests/crypto_test.rs) | 加密往返、GCM 篡改检测、哈希与 KDF |
+| [tests/key_derive_test.rs](tests/key_derive_test.rs) | 派生流程节点求值与确定性 |
+| [tests/packer_test.rs](tests/packer_test.rs) | 打包/解包往返、有效期、错密钥、info |
+| [tests/security_test.rs](tests/security_test.rs) | content_key 不落文件、注册失败不留死文件、黑盒自解压 |
+| [deploy/README.md](deploy/README.md) | 服务端部署说明 |
+| [deploy/Dockerfile](deploy/Dockerfile)、[deploy/docker-compose.yml](deploy/docker-compose.yml) | Docker 部署 |
+| [deploy/install-windows.ps1](deploy/install-windows.ps1)、[deploy/install-linux.sh](deploy/install-linux.sh) | 一键部署，并生成服务化脚本（NSSM / systemd） |
+| [docs/design.md](docs/design.md) | 设计文档 |
+| [docs/technical.md](docs/technical.md) | 技术方案清单 |
+
 ## 构建
 
 需要 Rust stable。
