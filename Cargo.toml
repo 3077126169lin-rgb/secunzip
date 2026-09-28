@@ -1,3 +1,10 @@
+# 三个 crate 同属一个 workspace：共用一份 Cargo.lock 与根目录的 target/，
+# 公共依赖（serde、tokio、reqwest、chrono 等）只编译一次。
+# 此前 gui/ 与 server/ 各自一份 target，同一批依赖被编译三遍。
+[workspace]
+members = ["gui", "server"]
+resolver = "2"
+
 [package]
 name = "secunzip"
 version = "0.1.0"
