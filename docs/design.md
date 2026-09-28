@@ -20,6 +20,9 @@
 2. 黑盒执行 — 用户看不到密钥、看不到文件路径
 3. 联网授权 — 必须联网获取密钥
 
+原则 2 的落地程度：密钥由服务端托管、解密在内存完成，用户不直接接触密钥；但「黑盒执行」目前**未实现**——
+内存 EXE 执行（RunPE）没有调用点（见 §8），EXE 黑盒产物只有从 GUI 打包、并由 GUI 自身双击运行时才可用（见 §3.3、[technical.md](technical.md) §2）。
+
 ### 2.2 用户标识
 
 使用用户ID（手机号/邮箱/任意ID）而非机器ID：换设备也能用，管理直观，不需要客户端采集机器码。
@@ -44,18 +47,29 @@ data_offset、data_size、original_size、integrity_hash。
 - 文件ID = 产物内容的 MD5（内容寻址），**不写入文件头**，打开时由客户端重算
 - `content_key` 不写入文件头，仅由服务端托管
 - Remote 模式下文件头中的 key_derive 字段被清空
+- `content_key` 是**打包时一次性确定的固定字符串**。打包界面的密钥流程选项（机器码 / 用户名 / 日期等）只在**打包机器上求值一次**
+  （`gui/src/app.rs` `generate_key_from_flow`、`src/cli/commands.rs:42-44`），求值结果转成十六进制串即 `content_key`，交给服务端托管；
+  打开时服务端原样下发该串，客户端固定按 `KeyNode::Input(KeySource::Literal(key_str))` 重建密钥（`src/runtime/loader.rs:101-104`）。
+  **打开阶段不读取接收方的机器码、日期、IP 或用户名**，这些选项不构成对接收方环境的绑定，只决定打包时生成的密钥串本身。
+- 头部 `PackConfig` 里的 `ip_whitelist`、`app_id`、`hash`、`allow_temp`、`run_mode` 会照原样序列化写入，但当前没有任何代码读取：
+  `ip_whitelist` 从不校验；`hash` 不影响完整性校验（恒为 SHA-256，`src/packer/builder.rs:66`）；`run_mode` 不参与分支（见 §3.3）；
+  `app_id` 在打包路径上恒为 `None`；`allow_temp` 用的是打包函数入参而非该字段（`src/core/types.rs:145-161`）。
 
 因为文件ID 可被任何拿到产物的人公开推导，服务端 register 必须防覆盖（见 §5.2）。
 
 ### 3.3 打开时的运行时形态
 
-打开产物只有一条路径：校验完整性并解密后，把文件装载为内存中的只读文件树（`VirtualFS`）。
+打开 `.secunzip` 产物只有一条路径：校验完整性并解密后，把文件装载为内存中的只读文件树（`VirtualFS`）。
 
 - 浏览：`src/runtime/mount.rs` 把该文件树以只读 WebDAV 在 `127.0.0.1` 随机端口服务出来，
   Windows 再用系统自带的 WebClient（`net use`）映射为盘符；盘符不写死，取 `Z:` 向下第一个空闲者。
 - 落盘：仅在用户显式指定输出目录时解压到磁盘（`open -o`）。
 - 产物头部的 `run_mode` 字段随 `PackConfig` 写入头部，但当前版本不解码后分支，打开行为与它无关；
   `RunMode` 的三个变体仅为保持头部编码稳定而保留（见 [technical.md](technical.md) §4）。
+- EXE 黑盒产物并不走单独的运行时路径：`build_exe` 内嵌的头部把 `format` 固定写成 `SecUnzip`（`src/packer/builder.rs:159`），
+  所以双击后同样是装载 VFS 浏览。`src/runtime/loader.rs:134-140` 中 `OutputFormat::Exe` 分支调用的 `execute_sandbox`
+  （`loader.rs:215-247`）只在头部 format 字节为 0 时触发，打包器从不产出这种头部，该分支实际不可达；该函数本身是把文件
+  **写入临时目录**再用资源管理器打开，**不是内存执行、也不是沙箱隔离**；真正的内存执行（RunPE）未接入（见 §8）。
 
 不用真实 ISO 挂载的原因：Windows 的 `Mount-DiskImage` 只能挂载磁盘上已存在的镜像文件，
 满足它就必然先把解密后的明文写入磁盘，与「明文不落盘」直接冲突；真正的内存盘挂载需要
@@ -76,6 +90,10 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 用户:   secunzip request file -u <用户ID> --days 3
 管理员: secunzip approve file -u <用户ID>
 ```
+
+`open` 只支持服务端认证：文件头为 `AuthMode::Local` 时直接报错拒绝（`src/cli/commands.rs:214-216`），GUI 也不产生此类文件。
+文件头里的 `expire_at` 在生产打包路径上恒为 `None`（`src/cli/commands.rs:58`），因此 `src/runtime/loader.rs:64,93,166` 的过期检查
+不会触发；实际生效的只有服务端下发的授权有效期，过期后服务端在取钥时拒绝并删除该授权（`server/src/main.rs:446-471`）。
 
 ## 5. 服务端
 
@@ -116,6 +134,11 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 | 服务端 | Axum + SQLite |
 | GUI | egui |
 
+头部枚举中声明但不可用的算法：`CryptoAlgo::Sm4Cbc`、`XChaCha20` 与 `HashAlgo::Sm3` 在派发处是 `unimplemented!()`
+（`src/crypto/traits.rs:41-42`、`src/crypto/hash.rs:65`），头部若记录这些算法会 panic；`CompressAlgo::SevenZ`、`TarZst`、`TarGz`
+静默回退为 ZIP（`src/packer/compress.rs:120-125`）；`KeyTransform::Concat` 是空操作（`src/key_derive/engine.rs:85`，
+拼接由上层 `KeyNode::Concat` 处理）。`src/core/config.rs:7` 的 `ProjectConfig` 无任何引用，是死代码。
+
 ## 7. 安全边界
 
 **信任锚**：服务端。它明文托管所有 content_key，服务端被攻破等于全部内容泄露。
@@ -139,7 +162,9 @@ WinFsp / Dokan 之类的文件系统驱动或签名内核驱动，超出本项�
 - [x] 服务端 API
 - [x] GUI 客户端
 - [x] 文件头部写入（Remote 模式下 key_derive 脱敏、content_key 不落文件）
-- [x] 内存 EXE 执行（RunPE，`--features runpe` 开关化；默认构建不含）
+- [ ] 内存 EXE 执行（RunPE，`--features runpe` 开关化；默认构建不含）。未接入：`run_pe_memory`（`src/runtime/runpe.rs:223`）无调用点；
+  两条实际执行 EXE 的路径都先把文件落盘（`src/runtime/loader.rs:222-231` 写临时目录，`src/runtime/executor.rs:94-95` 写临时 EXE），
+  且 `src/runtime/executor.rs` 的 `Executor` 整体无调用点
 - [x] 服务端安全加固（register 防覆盖、requests/logs 鉴权、审计日志、去 permissive CORS）
 - [x] AES-256-GCM 认证加密
 - [ ] TLS 传输；SHA-256 文件ID
