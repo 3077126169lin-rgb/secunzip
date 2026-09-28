@@ -11,6 +11,11 @@ version = "0.1.0"
 edition = "2021"
 description = "SecUnzip - 受控解压与内容交付工具"
 license = "MIT"
+repository = "https://github.com/3077126169lin-rgb/secunzip"
+authors = ["linkond <3077126169lin-rgb@users.noreply.github.com>"]
+readme = "README.md"
+keywords = ["encryption", "zip", "file-sharing", "cli"]
+categories = ["command-line-utilities", "cryptography"]
 
 [dependencies]
 # 加密

@@ -3,6 +3,9 @@ name = "secunzip-server"
 version = "0.1.0"
 edition = "2021"
 description = "SecUnzip 授权服务端 - 仅密钥下发"
+license = "MIT"
+repository = "https://github.com/3077126169lin-rgb/secunzip"
+authors = ["linkond <3077126169lin-rgb@users.noreply.github.com>"]
 
 [dependencies]
 axum = "0.7"
