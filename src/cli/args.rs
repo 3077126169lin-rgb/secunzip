@@ -48,6 +48,14 @@ pub enum Commands {
         /// 解压目录
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// 口令（缺省依次取 SECUNZIP_PASSWORD、配置里记住的口令、标准输入一行）
+        #[arg(long)]
+        password: Option<String>,
+
+        /// 取密钥成功后把口令记入本地配置，下次免输
+        #[arg(long)]
+        remember: bool,
     },
 
     ///  授权用户（管理员）
@@ -62,6 +70,14 @@ pub enum Commands {
         /// 有效期（YYYYMMDD 或 Nd 表示N天）
         #[arg(short, long)]
         expires: Option<String>,
+
+        /// 管理口令（缺省依次取 SECUNZIP_PASSWORD、配置里记住的管理口令、标准输入一行）
+        #[arg(long)]
+        password: Option<String>,
+
+        /// 授权成功后把管理口令记入本地配置
+        #[arg(long)]
+        remember: bool,
     },
 
     ///  吊销用户（管理员）
@@ -90,6 +106,14 @@ pub enum Commands {
         /// 申请说明
         #[arg(long)]
         message: Option<String>,
+
+        /// 口令（缺省依次取 SECUNZIP_PASSWORD、配置里记住的口令、标准输入一行）
+        #[arg(long)]
+        password: Option<String>,
+
+        /// 申请成功后把口令记入本地配置
+        #[arg(long)]
+        remember: bool,
     },
 
     ///  查看待审批（管理员）
@@ -110,6 +134,14 @@ pub enum Commands {
         /// 有效期（可选，覆盖申请的天数）
         #[arg(short, long)]
         expires: Option<String>,
+
+        /// 审批口令（可选：留空 = 沿用申请者申请时设定的口令，不回退配置、不读标准输入）
+        #[arg(long)]
+        password: Option<String>,
+
+        /// 本次显式填写了口令且审批成功时，把它记入配置供以后的 grant 使用
+        #[arg(long)]
+        remember: bool,
     },
 
     ///  审批拒绝（管理员）

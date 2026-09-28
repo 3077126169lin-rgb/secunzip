@@ -5,6 +5,19 @@ use eframe::egui;
 
 impl SecUnzipApp {
     pub(crate) fn show_manage(&mut self, ui: &mut egui::Ui) {
+        // 首次进入管理页时，用本机记住的管理口令预填「授权口令」（与命令行共用
+        // config.json 的 admin_password），省去重复输入。只填一次：之后用户手动
+        // 清空该框不会被下一帧再填回来。审批口令刻意不预填，避免默认覆盖掉
+        // 申请人在申请时自己设定的口令（那一栏留空表示沿用）。
+        if !self.admin_prefill_done {
+            self.admin_prefill_done = true;
+            if let Some(pwd) = self.admin_password.clone() {
+                if self.grant_password.is_empty() {
+                    self.grant_password = pwd;
+                }
+            }
+        }
+
         ui.horizontal(|ui| {
             crate::icons::wrench(ui, 18.0, theme::ACCENT);
             ui.label(
@@ -53,6 +66,25 @@ impl SecUnzipApp {
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("口令")
+                        .size(13.0)
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.grant_password)
+                        .password(true)
+                        .desired_width(200.0)
+                        .hint_text("必填"),
+                );
+                ui.label(
+                    egui::RichText::new("对方取密钥时需输入此口令，请另行告知")
+                        .size(12.0)
+                        .color(theme::TEXT_DIM),
+                );
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
                 if ui
                     .add_sized(
                         [120.0, 40.0],
@@ -93,6 +125,32 @@ impl SecUnzipApp {
             }
         });
         ui.add_space(8.0);
+        // 审批口令：留空则请求里不带该字段，服务端沿用申请人自己设定的口令
+        egui::Frame::none()
+            .fill(theme::INPUT_BG)
+            .rounding(egui::Rounding::same(10.0))
+            .inner_margin(egui::Margin::same(14.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("审批口令")
+                            .size(13.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.approve_password)
+                            .password(true)
+                            .desired_width(200.0)
+                            .hint_text("选填"),
+                    );
+                    ui.label(
+                        egui::RichText::new("留空表示沿用申请时设定的口令")
+                            .size(12.0)
+                            .color(theme::TEXT_DIM),
+                    );
+                });
+            });
+        ui.add_space(10.0);
 
         if self.pending_requests.is_empty() {
             theme::card(ui, theme::CARD, |ui| {
@@ -168,6 +226,12 @@ impl SecUnzipApp {
 
             if let Some((user_id, approved)) = action {
                 let rt = tokio::runtime::Runtime::new().unwrap();
+                // 留空 = 不覆盖，沿用申请人设定的口令（字段整体省略）
+                let approve_pwd = if self.approve_password.is_empty() {
+                    None
+                } else {
+                    Some(self.approve_password.clone())
+                };
                 let result = rt.block_on(async {
                     if approved {
                         api::approve_request(
@@ -176,6 +240,7 @@ impl SecUnzipApp {
                             &self.secret,
                             &user_id,
                             None,
+                            approve_pwd.as_deref(),
                         )
                         .await
                     } else {
@@ -186,6 +251,10 @@ impl SecUnzipApp {
                 match result {
                     Ok(msg) => {
                         self.show_status(&msg.to_string(), false);
+                        // 审批成功且确实下发过口令：记下管理口令，下次不必重输
+                        if let Some(pwd) = approve_pwd {
+                            self.remember_admin_password(&pwd);
+                        }
                         self.refresh_requests();
                     }
                     Err(e) => self.show_status(&e.to_string(), true),
@@ -197,6 +266,10 @@ impl SecUnzipApp {
     pub(crate) fn do_grant(&mut self) {
         if self.grant_user.is_empty() {
             self.show_status("请输入用户ID", true);
+            return;
+        }
+        if self.grant_password.is_empty() {
+            self.show_status("请输入口令（对方取密钥时需要它）", true);
             return;
         }
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -212,6 +285,7 @@ impl SecUnzipApp {
                 &self.secret,
                 &self.grant_user,
                 exp,
+                &self.grant_password,
             )
             .await
         });
@@ -219,6 +293,10 @@ impl SecUnzipApp {
             Ok(msg) => {
                 self.show_status(&msg.to_string(), false);
                 self.grant_user.clear();
+                // 授权成功：记下管理口令（与命令行同一字段），继续给别的用户授权时不必重输。
+                // 口令框保留在界面上（掩码显示），也已在 config.json 里。
+                let pwd = self.grant_password.clone();
+                self.remember_admin_password(&pwd);
             }
             Err(e) => self.show_status(&e.to_string(), true),
         }

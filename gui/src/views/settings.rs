@@ -1,4 +1,5 @@
-use crate::app::SecUnzipApp;
+use crate::app::{short_id, SecUnzipApp};
+use crate::model::AppConfig;
 use crate::monitor::{is_loopback, local_ip};
 use crate::theme;
 use eframe::egui;
@@ -53,6 +54,118 @@ impl SecUnzipApp {
                                 .hint_text("http://服务器IP或域名:8090")
                                 .desired_width(360.0),
                         );
+                    });
+                    ui.add_space(14.0);
+
+                    theme::card(ui, theme::CARD, |ui| {
+                        ui.label(
+                            egui::RichText::new("已记住的口令")
+                                .size(15.0)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "明文保存在 {}（与个人 ID、服务器地址同一份文件），仅存本机；只有取密钥成功后才会写入",
+                                AppConfig::config_path().display()
+                            ))
+                            .size(12.0)
+                            .color(theme::TEXT_DIM),
+                        );
+                        ui.add_space(12.0);
+
+                        if self.remembered.is_empty() {
+                            ui.label(
+                                egui::RichText::new("暂无记住的口令")
+                                    .size(13.0)
+                                    .color(theme::TEXT_DIM),
+                            );
+                        } else {
+                            let list = self.remembered.clone();
+                            let mut remove: Option<usize> = None;
+                            for (i, e) in list.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} · 文件 {} · {}",
+                                            e.user_id,
+                                            short_id(&e.app_id),
+                                            e.server_url
+                                        ))
+                                        .size(13.0)
+                                        .color(theme::TEXT),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("清除").clicked() {
+                                                remove = Some(i);
+                                            }
+                                        },
+                                    );
+                                });
+                                if i + 1 < list.len() {
+                                    ui.separator();
+                                }
+                            }
+                            if let Some(i) = remove {
+                                self.remembered.remove(i);
+                                self.remembered_source = None;
+                                self.save_settings();
+                                self.show_status("已清除记住的口令", false);
+                            }
+                            ui.add_space(10.0);
+                            if ui.button("清除全部").clicked() {
+                                self.remembered.clear();
+                                self.remembered_source = None;
+                                self.remember_password = false;
+                                self.open_password.clear();
+                                self.save_settings();
+                                self.show_status("已清除全部记住的口令", false);
+                            }
+                        }
+
+                        // 管理口令（与命令行共用同一份配置的 admin_password 字段）
+                        ui.add_space(14.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("管理口令")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            ui.label(
+                                egui::RichText::new("授权 / 审批时使用，与命令行共用同一字段")
+                                    .size(12.0)
+                                    .color(theme::TEXT_DIM),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if self.admin_password.is_some() {
+                                ui.label(
+                                    egui::RichText::new("已记住（明文保存，不下发到界面）")
+                                        .size(13.0)
+                                        .color(theme::TEXT),
+                                );
+                                if ui.small_button("清除").clicked() {
+                                    self.admin_password = None;
+                                    self.grant_password.clear();
+                                    self.approve_password.clear();
+                                    self.save_settings();
+                                    self.show_status("已清除记住的管理口令", false);
+                                }
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("未记住")
+                                        .size(13.0)
+                                        .color(theme::TEXT_DIM),
+                                );
+                            }
+                        });
                     });
                     ui.add_space(14.0);
 

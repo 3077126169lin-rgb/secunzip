@@ -65,6 +65,7 @@ impl SecUnzipApp {
                         self.is_admin = false;
                         self.secret.clear();
                         self.app_id.clear();
+                        self.reset_password_inputs();
                         self.vfs = None;
                         if let Some(h) = self.mount_handle.take() {
                             unmount_drive(h);
@@ -333,6 +334,85 @@ impl SecUnzipApp {
                     }
                 });
 
+                // 口令输入框只在服务端因口令拒绝（缺失/错误）或申请时需要时出现，
+                // 管理员凭 secret 路径不显示、也不需要口令。
+                if self.show_password_input {
+                    ui.add_space(14.0);
+                    egui::Frame::none()
+                        .fill(theme::INPUT_BG)
+                        .rounding(egui::Rounding::same(10.0))
+                        .inner_margin(egui::Margin::same(14.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                crate::icons::lock(ui, 13.0, theme::TEXT_DIM);
+                                ui.label(
+                                    egui::RichText::new("取密钥口令")
+                                        .size(13.0)
+                                        .strong()
+                                        .color(theme::TEXT_DIM),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "普通用户取密钥需校验口令（明文发往服务端校验）；管理员凭密钥文件，无需口令",
+                                )
+                                .size(12.0)
+                                .color(theme::TEXT_DIM),
+                            );
+                            if !self.password_hint.is_empty() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(self.password_hint.clone())
+                                        .size(12.0)
+                                        .color(theme::ERR),
+                                );
+                            } else if self.remembered_source.is_some() {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new("已自动填入本机记住的口令")
+                                        .size(12.0)
+                                        .color(theme::OK),
+                                );
+                            }
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("口令")
+                                        .size(13.0)
+                                        .color(theme::TEXT_DIM),
+                                );
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.open_password)
+                                        .password(true)
+                                        .desired_width(220.0)
+                                        .hint_text("申请或授权时设定的口令"),
+                                );
+                                let entered = resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if ui.button("用此口令重试").clicked() || entered {
+                                    self.do_open();
+                                }
+                            });
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    &mut self.remember_password,
+                                    egui::RichText::new("记住口令")
+                                        .size(13.0)
+                                        .color(theme::TEXT_DIM),
+                                );
+                                ui.label(
+                                    egui::RichText::new(
+                                        "仅在本机 config.json 明文保存，取密钥成功后才会写入；可在设置页清除",
+                                    )
+                                    .size(12.0)
+                                    .color(theme::TEXT_DIM),
+                                );
+                            });
+                        });
+                }
+
                 ui.add_space(14.0);
                 if ui
                     .link(
@@ -566,16 +646,23 @@ impl SecUnzipApp {
 
     pub(crate) fn do_open(&mut self) {
         // 非管理员走 user_id 授权需个人 ID；管理员凭 secret，无需
-        if !(self.is_admin && !self.secret.is_empty()) && !self.ensure_user() {
+        let admin = self.is_admin && !self.secret.is_empty();
+        if !admin && !self.ensure_user() {
             return;
         }
         self.show_status("正在连接服务器…", false);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
-            if self.is_admin && !self.secret.is_empty() {
+            if admin {
                 api::request_key_admin(&self.server_url, &self.app_id, &self.secret).await
             } else {
-                api::request_key(&self.server_url, &self.app_id, &self.user_id).await
+                // 口令留空时不发送该字段，服务端会明确回「口令缺失」
+                let pwd = if self.open_password.is_empty() {
+                    None
+                } else {
+                    Some(self.open_password.as_str())
+                };
+                api::request_key(&self.server_url, &self.app_id, &self.user_id, pwd).await
             }
         });
         match result {
@@ -583,9 +670,16 @@ impl SecUnzipApp {
                 let mount = self.open_loader().map(|l| l.mount_vfs_with_key(&key));
                 match mount {
                     Some(Ok(vfs)) => {
+                        // 只有在勾选「记住口令」且本次取密钥成功后才写入配置；
+                        // 失败（含口令错误）绝不写入。
+                        if !admin && self.remember_password && !self.open_password.is_empty() {
+                            self.remember_current_password();
+                        }
                         self.vfs = Some(Arc::new(vfs));
                         self.cur_dir.clear();
                         self.preview_path = None;
+                        self.show_password_input = false;
+                        self.password_hint.clear();
                         self.show_status("已挂载（内存只读，未落盘）", false);
                     }
                     Some(Err(e)) => self.show_status(&format!("解密失败: {}", e), true),
@@ -593,6 +687,27 @@ impl SecUnzipApp {
                 }
             }
             Err(e) => {
+                // 口令被拒不是死路：就地展开口令输入框，让用户改正后重试，
+                // 并把服务端 message 原样展示（错误口令 / 缺少口令 / 旧授权无口令）
+                if !admin && crate::app::is_password_refusal(&e) {
+                    let mut hint = e.clone();
+                    // 服务端判「口令错误」：说明记住的口令已失效（例如管理员改过口令）。
+                    // 立刻删掉本地记忆并清空输入框，避免一直拿错口令重试。
+                    if crate::app::is_wrong_password(&e) && !self.open_password.is_empty() {
+                        let forgotten = self.forget_rejected_password();
+                        self.open_password.clear();
+                        if forgotten {
+                            hint = format!(
+                                "{} —— 已清除本机记住的口令，请向管理员确认当前口令后重新输入",
+                                e
+                            );
+                        }
+                    }
+                    self.show_password_input = true;
+                    self.password_hint = hint.clone();
+                    self.show_status(&hint, true);
+                    return;
+                }
                 let msg = if e.contains("网络错误") {
                     format!(
                         "无法连接服务器（{}）：请确认服务端已启动、地址正确",
@@ -612,9 +727,24 @@ impl SecUnzipApp {
         if !self.ensure_user() {
             return;
         }
+        // need_days 必须是正整数（服务端拒绝 0 与负数），先在本地拦住并说明
+        let days: i32 = match self.request_days.trim().parse::<i32>() {
+            Ok(d) if d > 0 => d,
+            _ => {
+                self.show_status("申请天数必须是正整数（例如 3）", true);
+                return;
+            }
+        };
+        if self.open_password.is_empty() {
+            self.show_password_input = true;
+            self.show_status(
+                "请先在下方「取密钥口令」里设定口令（申请时自行设定，之后取密钥要用它），再点「申请临时权限」",
+                true,
+            );
+            return;
+        }
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
-            let days = self.request_days.parse().unwrap_or(3);
             let msg = if self.request_message.is_empty() {
                 None
             } else {
@@ -626,6 +756,7 @@ impl SecUnzipApp {
                 &self.user_id,
                 Some(days),
                 msg,
+                &self.open_password,
             )
             .await
         });

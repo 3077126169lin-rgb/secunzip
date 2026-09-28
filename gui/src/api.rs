@@ -28,15 +28,27 @@ pub struct RequestInfo {
     pub created_at: String,
 }
 
-/// 请求密钥（普通用户：需已授权）
-pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<String, String> {
+/// 请求密钥（普通用户：需已授权 + 本人预设的口令）。
+///
+/// 口令由客户端明文传输、在服务端校验；这里绝不自行哈希。
+/// `password` 为空时整个字段不发送，服务端会以「口令缺失」拒绝并给出提示。
+pub async fn request_key(
+    server: &str,
+    app_id: &str,
+    user_id: &str,
+    password: Option<&str>,
+) -> Result<String, String> {
     let client = reqwest::Client::new();
+    let mut body = serde_json::json!({
+        "app_id": app_id,
+        "user_id": user_id,
+    });
+    if let Some(pwd) = password.filter(|p| !p.is_empty()) {
+        body["password"] = serde_json::json!(pwd);
+    }
     let resp = client
         .post(format!("{}/api/key", server))
-        .json(&serde_json::json!({
-            "app_id": app_id,
-            "user_id": user_id,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("网络错误: {}", e))?;
@@ -78,13 +90,14 @@ pub async fn request_key_admin(server: &str, app_id: &str, secret: &str) -> Resu
     }
 }
 
-/// 申请临时权限
+/// 申请临时权限（申请人自行设定口令，用于日后取密钥）
 pub async fn request_access(
     server: &str,
     app_id: &str,
     user_id: &str,
     need_days: Option<i32>,
     message: Option<String>,
+    password: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
     let resp = client
@@ -94,6 +107,7 @@ pub async fn request_access(
             "user_id": user_id,
             "need_days": need_days,
             "message": message,
+            "password": password,
         }))
         .send()
         .await
@@ -107,13 +121,14 @@ pub async fn request_access(
     Ok(data.message)
 }
 
-/// 授权用户
+/// 授权用户（管理员为对方设定取密钥用的口令）
 pub async fn grant_user(
     server: &str,
     app_id: &str,
     secret: &str,
     user_id: &str,
     expires_at: Option<String>,
+    password: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
     let resp = client
@@ -123,6 +138,7 @@ pub async fn grant_user(
             "secret": secret,
             "user_id": user_id,
             "expires_at": expires_at,
+            "password": password,
         }))
         .send()
         .await
@@ -190,22 +206,29 @@ pub async fn list_requests(
 }
 
 /// 审批通过
+///
+/// `password` 为空表示不覆盖：整个字段不发送，服务端沿用申请人在申请时设定的口令。
 pub async fn approve_request(
     server: &str,
     app_id: &str,
     secret: &str,
     user_id: &str,
     expires_at: Option<String>,
+    password: Option<&str>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
+    let mut body = serde_json::json!({
+        "app_id": app_id,
+        "secret": secret,
+        "user_id": user_id,
+        "expires_at": expires_at,
+    });
+    if let Some(pwd) = password.filter(|p| !p.is_empty()) {
+        body["password"] = serde_json::json!(pwd);
+    }
     let resp = client
         .post(format!("{}/api/approve", server))
-        .json(&serde_json::json!({
-            "app_id": app_id,
-            "secret": secret,
-            "user_id": user_id,
-            "expires_at": expires_at,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("网络错误: {}", e))?;

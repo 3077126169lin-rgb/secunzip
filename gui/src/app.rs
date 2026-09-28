@@ -1,6 +1,6 @@
 //! SecUnzip 客户端：应用状态、业务逻辑与渲染入口。
 use crate::api;
-use crate::model::{Action, AppConfig, AppState, Mode, OpenTab, PackedEntry};
+use crate::model::{Action, AppConfig, AppState, Mode, OpenTab, PackedEntry, RememberedPassword};
 use crate::monitor::{local_ip, Monitor};
 use crate::theme;
 use eframe::egui;
@@ -31,8 +31,32 @@ pub struct SecUnzipApp {
     pub(crate) request_message: String,
     pub(crate) show_request_opts: bool,
 
+    /// 取密钥口令（普通用户；管理员凭 secret 不需要）
+    pub(crate) open_password: String,
+    /// 服务端因口令拒绝后才显示口令输入框，避免对无需口令的文件强加输入
+    pub(crate) show_password_input: bool,
+    /// 上一次口令被拒的原因（原样取自服务端 message）
+    pub(crate) password_hint: String,
+    /// 「记住口令」勾选框；默认不勾，只有取密钥成功后才写入配置
+    pub(crate) remember_password: bool,
+    /// 本次自动填入的口令来自哪条记忆（app_id, server_url, user_id），失效时据此精确删除
+    pub(crate) remembered_source: Option<(String, String, String)>,
+    /// 本机记住的口令（config.json 里明文保存）
+    pub(crate) remembered: Vec<RememberedPassword>,
+    /// 记住的管理口令（与命令行共用同一份 config.json 的顶层 admin_password 字段），
+    /// 只作保存时原样写回，不能在 GUI 保存时被抹掉
+    pub(crate) admin_password: Option<String>,
+    /// 管理页只在首次进入时用记住的管理口令预填一次，之后用户清空不会被反复填回
+    pub(crate) admin_prefill_done: bool,
+    /// 配置文件里其它（命令行写入的）顶层字段，保存时原样带回，避免跨端丢字段
+    pub(crate) extra: serde_json::Map<String, serde_json::Value>,
+
     pub(crate) grant_user: String,
     pub(crate) grant_expires: String,
+    /// 授权时为对方设定的口令
+    pub(crate) grant_password: String,
+    /// 审批时可选的口令；留空表示沿用申请人自己设定的口令
+    pub(crate) approve_password: String,
 
     pub(crate) status_message: String,
     pub(crate) status_is_error: bool,
@@ -62,10 +86,25 @@ pub struct SecUnzipApp {
 
 impl SecUnzipApp {
     pub(crate) fn new(initial_file: Option<PathBuf>) -> Self {
-        let (state, user_id, server_url) = match AppConfig::load() {
-            Some(c) => (AppState::Main, c.user_id, c.server_url),
-            None => (AppState::Setup, String::new(), String::new()),
-        };
+        let (state, user_id, server_url, remembered, admin_password, extra) =
+            match AppConfig::load() {
+                Some(c) => (
+                    AppState::Main,
+                    c.user_id,
+                    c.server_url,
+                    c.remembered_passwords,
+                    c.admin_password,
+                    c.extra,
+                ),
+                None => (
+                    AppState::Setup,
+                    String::new(),
+                    String::new(),
+                    Vec::new(),
+                    None,
+                    serde_json::Map::new(),
+                ),
+            };
         let state = if initial_file.is_some() {
             AppState::Main
         } else {
@@ -86,8 +125,19 @@ impl SecUnzipApp {
             request_days: "3".into(),
             request_message: String::new(),
             show_request_opts: false,
+            open_password: String::new(),
+            show_password_input: false,
+            password_hint: String::new(),
+            remember_password: false,
+            remembered_source: None,
+            remembered,
+            admin_password,
+            admin_prefill_done: false,
+            extra,
             grant_user: String::new(),
             grant_expires: String::new(),
+            grant_password: String::new(),
+            approve_password: String::new(),
             status_message: String::new(),
             status_is_error: false,
             pending_requests: Vec::new(),
@@ -133,6 +183,21 @@ impl SecUnzipApp {
     pub(crate) fn show_status(&mut self, msg: &str, is_error: bool) {
         self.status_message = msg.to_string();
         self.status_is_error = is_error;
+    }
+
+    /// 清空口令相关输入。
+    ///
+    /// 口令按「文件 + 用户」授权保存，换文件后旧口令不再适用，
+    /// 因此切换文件时一并清掉，避免拿着上一个文件的口令去重试。
+    pub(crate) fn reset_password_inputs(&mut self) {
+        self.open_password.clear();
+        self.show_password_input = false;
+        self.password_hint.clear();
+        self.remember_password = false;
+        self.remembered_source = None;
+        self.admin_prefill_done = false;
+        self.grant_password.clear();
+        self.approve_password.clear();
     }
 
     /// 检查服务器连通性（阻塞式，仅在关键动作时调用）
@@ -199,8 +264,98 @@ impl SecUnzipApp {
         AppConfig {
             user_id: self.user_id.clone(),
             server_url: self.server_url.clone(),
+            remembered_passwords: self.remembered.clone(),
+            // 原样写回：命令行写入的 admin_password 不能因为 GUI 保存而丢失
+            admin_password: self.admin_password.clone(),
+            // 其它未知顶层字段同样原样带回
+            extra: self.extra.clone(),
         }
         .save();
+    }
+
+    /// 记录管理口令（授权/审批成功后调用），与命令行共用 config.json 的 admin_password 字段
+    pub(crate) fn remember_admin_password(&mut self, password: &str) {
+        if password.is_empty() {
+            return;
+        }
+        self.admin_password = Some(password.to_string());
+        self.save_settings();
+    }
+
+    /// 记下当前文件的口令（只在勾选「记住口令」且取密钥成功后调用）。
+    ///
+    /// 明文写入 config.json：该文件本来就明文存个人 ID 与服务器地址，这里不做加密。
+    pub(crate) fn remember_current_password(&mut self) {
+        if self.open_password.is_empty() {
+            return;
+        }
+        let app_id = self.app_id.clone();
+        let server_url = self.server_url.clone();
+        let user_id = self.user_id.clone();
+        // 同一文件 + 同一用户只保留最新一条
+        self.remembered
+            .retain(|e| !(e.app_id == app_id && e.user_id == user_id));
+        self.remembered.insert(
+            0,
+            RememberedPassword {
+                app_id: app_id.clone(),
+                server_url: server_url.clone(),
+                user_id: user_id.clone(),
+                password: self.open_password.clone(),
+            },
+        );
+        // 上限：只保留最近 32 条，避免配置文件无限膨胀
+        self.remembered.truncate(32);
+        self.remembered_source = Some((app_id, server_url, user_id));
+        self.save_settings();
+    }
+
+    /// 口令被服务端判为错误时，删掉与之对应的记忆（可能来自「服务器 + 用户」回退条目）。
+    ///
+    /// 只删「口令值与被拒口令相同」的那条：用户手输了别的口令被拒时，
+    /// 不会连带删掉仍然正确的记忆。返回是否真的删除了内容。
+    pub(crate) fn forget_rejected_password(&mut self) -> bool {
+        let rejected = self.open_password.clone();
+        let app_id = self.app_id.clone();
+        let user_id = self.user_id.clone();
+        let source = self.remembered_source.clone();
+        let before = self.remembered.len();
+        self.remembered.retain(|e| {
+            let from_source = source
+                .as_ref()
+                .is_some_and(|(a, s, u)| *a == e.app_id && *s == e.server_url && *u == e.user_id);
+            let same_file = e.app_id == app_id && e.user_id == user_id;
+            !((from_source || same_file) && e.password == rejected)
+        });
+        let removed = self.remembered.len() != before;
+        if removed {
+            self.remembered_source = None;
+            self.save_settings();
+        }
+        removed
+    }
+
+    /// 载入文件后：本地若记住过该文件（或该服务器 + 该用户）的口令就自动填入，
+    /// 用户不必再输。口令是否仍有效由服务端校验，被拒时会清掉（见 views/open.rs）。
+    pub(crate) fn apply_remembered_password(&mut self) {
+        let Some(entry) = RememberedPassword::find(
+            &self.remembered,
+            &self.app_id,
+            &self.server_url,
+            &self.user_id,
+        ) else {
+            return;
+        };
+        self.open_password = entry.password.clone();
+        self.remembered_source = Some((
+            entry.app_id.clone(),
+            entry.server_url.clone(),
+            entry.user_id.clone(),
+        ));
+        // 勾选框如实反映本地已记住的状态
+        self.remember_password = true;
+        // 展示出来，用户能看见、能改、能取消勾选
+        self.show_password_input = true;
     }
 
     pub(crate) fn open_loader(&self) -> Option<secunzip::runtime::RuntimeLoader> {
@@ -214,6 +369,8 @@ impl SecUnzipApp {
     }
 
     pub(crate) fn load_file_info(&mut self) {
+        // 换文件：清掉上一个文件的口令输入
+        self.reset_password_inputs();
         if let Some(bytes) = self.blackbox.clone() {
             if let Ok(loader) = secunzip::runtime::RuntimeLoader::from_bytes(&bytes) {
                 if let secunzip::core::AuthMode::Remote(server) = &loader.header().config.auth_mode
@@ -225,6 +382,8 @@ impl SecUnzipApp {
                         self.app_id = md5;
                     }
                 }
+                // 之前记住过口令就自动填入
+                self.apply_remembered_password();
                 self.show_status("黑盒已加载（联网取密钥后浏览）", false);
             } else {
                 self.show_status("黑盒数据解析失败", true);
@@ -250,6 +409,16 @@ impl SecUnzipApp {
                         self.secret = s;
                         self.is_admin = true;
                     }
+                }
+                if self.is_admin {
+                    // 管理员凭 secret 取密钥，不需要口令，也不要用记住的口令干扰
+                    self.open_password.clear();
+                    self.show_password_input = false;
+                    self.remember_password = false;
+                    self.remembered_source = None;
+                } else {
+                    // 之前记住过口令就自动填入
+                    self.apply_remembered_password();
                 }
                 self.show_status(
                     if self.is_admin {
@@ -504,6 +673,21 @@ impl eframe::App for SecUnzipApp {
 
         self.apply_pending_action();
     }
+}
+
+/// 服务端因口令问题拒绝时（缺失 / 错误 / 该授权记录本就没有口令），
+/// message 里都会点明「口令」，据此决定是否展示口令输入框。
+pub(crate) fn is_password_refusal(msg: &str) -> bool {
+    msg.contains("口令") || msg.contains("密码") || msg.to_ascii_lowercase().contains("password")
+}
+
+/// 服务端明确判「口令不对」，区别于「没收到口令」和「该授权根本没有口令」。
+/// 只有这一种情况才需要清掉本机记住的口令。
+pub(crate) fn is_wrong_password(msg: &str) -> bool {
+    msg.contains("口令错误")
+        || msg.contains("口令不正确")
+        || msg.contains("密码错误")
+        || msg.to_ascii_lowercase().contains("wrong password")
 }
 
 pub(crate) fn short_id(id: &str) -> String {
