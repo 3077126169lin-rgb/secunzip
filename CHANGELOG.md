@@ -4,6 +4,35 @@
 
 ## 未发布
 
+## 0.1.1 - 2026-09-28
+
+### 修复
+
+- **盘符挂载会误删用户自己的映射**：此前固定挂载到 `Z:`，且在映射失败（该盘符已被网络共享、U 盘或 VHD 占用）
+  时仍报告成功，随后「卸载」会无条件执行 `net use Z: /delete /y`，删掉用户自己的映射。
+  现在自动挑选空闲盘符，`net use` 失败如实报错，且只在确实由本程序建立的映射上执行删除。
+- **产物头部解析越界 panic**：`PackHeader::from_bytes` 用文件内的长度字段直接切片，
+  被截断或长度字段被伪造的产物会让程序 panic 而非返回错误。
+
+### 变更
+
+- 三个 crate 合并为一个 Cargo workspace，共用一份 `Cargo.lock` 与 `target/`，
+  公共依赖只编译一次；根目录的 `[profile.release]`（LTO、strip）因此对三个成员统一生效，
+  产物明显变小。
+- 移除 12 个声明了但源码零引用的依赖。
+- 运行模式、挂载方式、`execute_sandbox` 等注释与文档改为如实描述实现状况，
+  不再声称未实现的能力。
+
+### 新增
+
+- `GET /healthz` 存活探针，不访问数据库、无需鉴权。
+- CI：每次推送与 PR 执行 `cargo fmt --all --check`、`cargo clippy --workspace -D warnings`
+  与全部测试；发布流程增加 Linux 服务端产物（静态链接 musl）。
+- 测试从 48 个增至 82 个：新增服务端黑盒集成测试 22 个（鉴权、注册防覆盖、多应用隔离、
+  迁移与审计保留、备份、启动失败路径、健康检查）、解析健壮性测试 4 个、盘符选择与卸载安全测试 8 个。
+- 工程文件：`.gitattributes`、`rustfmt.toml`、`.editorconfig`、`CONTRIBUTING.md`、`SECURITY.md`、
+  `CODE_OF_CONDUCT.md`、`CHANGELOG.md`、issue 与 PR 模板、`DISCLAIMER.txt`（安装包首屏强制阅读）。
+
 ## 0.1.0 - 2026-09-28
 
 首个版本。
