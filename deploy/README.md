@@ -75,6 +75,8 @@ cargo build --release
 
 ## 安装为系统服务
 
+本节使用的 install-service.ps1 与 install-service.sh 不随仓库提供，需先运行 install-windows.ps1 或 install-linux.sh 生成后再执行。
+
 ### Windows
 
 ```powershell
