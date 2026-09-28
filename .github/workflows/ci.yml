@@ -26,7 +26,10 @@ jobs:
 
       # 三个 crate 是彼此独立的 Cargo 工程，逐个检查
       - name: rustfmt
-        run: cargo fmt --check
+        run: |
+          cargo fmt --check
+          cargo fmt --check --manifest-path server/Cargo.toml
+          cargo fmt --check --manifest-path gui/Cargo.toml
 
       - name: clippy（核心库与 CLI）
         run: cargo clippy --all-targets -- -D warnings
