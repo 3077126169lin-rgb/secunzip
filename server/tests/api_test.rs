@@ -187,7 +187,11 @@ fn body_of(raw: &[u8]) -> Vec<u8> {
     out
 }
 
-fn post_json(port: u16, path: &str, body: Value) -> Value {
+/// 发一个 POST，返回 (HTTP 状态码, 解析后的 JSON body)。
+///
+/// 与 get_json 对称：数据库故障要断言的正是 500 状态码，而原先的 post_json 只返回 body、
+/// 把状态行丢掉了，所以单独留一个带状态的版本，post_json 复用它。
+fn post_status_json(port: u16, path: &str, body: Value) -> (u16, Value) {
     let payload = body.to_string();
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("连接失败");
     s.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
@@ -200,15 +204,21 @@ fn post_json(port: u16, path: &str, body: Value) -> Value {
     s.write_all(req.as_bytes()).unwrap();
     let mut raw = Vec::new();
     s.read_to_end(&mut raw).unwrap();
+    let head = String::from_utf8_lossy(&raw).to_string();
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("{} 的响应缺少状态行\n原文: {}", path, head));
     let body = body_of(&raw);
-    serde_json::from_slice(&body).unwrap_or_else(|e| {
-        panic!(
-            "{} 的响应不是 JSON: {}\n原文: {}",
-            path,
-            e,
-            String::from_utf8_lossy(&raw)
-        )
-    })
+    let json = serde_json::from_slice(&body)
+        .unwrap_or_else(|e| panic!("{} 的响应不是 JSON: {}\n原文: {}", path, e, head));
+    (status, json)
+}
+
+fn post_json(port: u16, path: &str, body: Value) -> Value {
+    post_status_json(port, path, body).1
 }
 
 /// 发一个 GET 请求，返回 (HTTP 状态码, 解析后的 JSON body)。
@@ -358,17 +368,233 @@ fn test_key_requires_grant() {
 }
 
 #[test]
+fn test_grant_with_password_then_key_succeeds() {
+    let s = Server::start("pwd-ok");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "alice@example.com", "password": "正确口令-123" }),
+    );
+    assert_eq!(r["success"], json!(true), "带口令的授权应成功: {}", r);
+
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "alice@example.com", "password": "正确口令-123" }),
+    );
+    assert_eq!(r["success"], json!(true), "口令正确应下发密钥: {}", r);
+    assert_eq!(text(&r, "key"), "KEY-A");
+
+    // 数据库里存的是散列而不是明文口令
+    let pool = pool_for(&s.db());
+    let (salt, hash): (Option<String>, Option<String>) = runtime().block_on(async {
+        let row = sqlx::query("SELECT pwd_salt, pwd_hash FROM grants WHERE app_id = 'app-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        (row.get("pwd_salt"), row.get("pwd_hash"))
+    });
+    runtime().block_on(pool.close());
+    let salt = salt.expect("pwd_salt 不应为空");
+    let hash = hash.expect("pwd_hash 不应为空");
+    assert_eq!(salt.len(), 32, "16 字节盐应为 32 位 hex: {}", salt);
+    assert_eq!(hash.len(), 64, "32 字节散列应为 64 位 hex: {}", hash);
+    assert!(
+        salt.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "盐应为小写 hex: {}",
+        salt
+    );
+    assert!(
+        hash.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "散列应为小写 hex: {}",
+        hash
+    );
+    assert_ne!(hash, "正确口令-123", "库里不能存明文口令");
+}
+
+#[test]
+fn test_key_with_wrong_password_is_rejected_and_audited() {
+    let s = Server::start("pwd-wrong");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "alice@example.com", "password": "pw-right" }),
+    );
+    assert_eq!(r["success"], json!(true));
+
+    // 知道 user_id 但口令不对：拒绝，且不返回 key
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "alice@example.com", "password": "pw-wrong" }),
+    );
+    assert_eq!(r["success"], json!(false), "错误口令必须被拒: {}", r);
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段");
+    assert!(
+        text(&r, "message").contains("口令"),
+        "应说明口令问题: {}",
+        r
+    );
+
+    // 失败必须留审计，details 写明原因
+    let r = s.post(
+        "/api/logs",
+        json!({ "app_id": "app-a", "secret": "secret-a" }),
+    );
+    let logs = r["logs"].as_array().unwrap();
+    let denied: Vec<&Value> = logs
+        .iter()
+        .filter(|l| text(l, "action") == "key" && l["success"] == json!(false))
+        .collect();
+    assert!(
+        denied
+            .iter()
+            .any(|l| text(l, "details").contains("口令错误")),
+        "错误口令应计入审计: {}",
+        r
+    );
+
+    // 口令正确时才下发
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "alice@example.com", "password": "pw-right" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-A");
+}
+
+#[test]
+fn test_key_without_password_is_rejected() {
+    let s = Server::start("pwd-missing");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+    s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "alice@example.com", "password": "pw-right" }),
+    );
+
+    // 省略 password 字段
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "alice@example.com" }),
+    );
+    assert_eq!(r["success"], json!(false), "无口令必须被拒: {}", r);
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段");
+    assert!(
+        text(&r, "message").contains("口令"),
+        "应提示需要口令: {}",
+        r
+    );
+
+    // 显式空串同样被拒
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "alice@example.com", "password": "" }),
+    );
+    assert_eq!(r["success"], json!(false), "空口令必须被拒: {}", r);
+}
+
+#[test]
+fn test_key_rejects_grant_without_password() {
+    let s = Server::start("legacy-grant");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    // 模拟迁移前留下的授权行：pwd_salt / pwd_hash 为 NULL
+    let pool = pool_for(&s.db());
+    runtime().block_on(async {
+        sqlx::query("INSERT INTO grants (app_id, user_id, granted_at, expires_at, pwd_salt, pwd_hash) VALUES ('app-a', 'legacy', '20200101', NULL, NULL, NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime().block_on(pool.close());
+
+    // 带口令也一样被拒：库里没有散列，无从校验
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "legacy", "password": "whatever" }),
+    );
+    assert_eq!(
+        r["success"],
+        json!(false),
+        "无口令散列的授权必须被拒: {}",
+        r
+    );
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段");
+    assert!(
+        text(&r, "message").contains("重新授权"),
+        "应提示管理员重新授权: {}",
+        r
+    );
+
+    // 连口令都不带时提示一致（先判「授权有没有口令」再判「调用方给没给口令」）
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "legacy" }),
+    );
+    assert_eq!(r["success"], json!(false));
+    assert!(text(&r, "message").contains("重新授权"));
+}
+
+#[test]
+fn test_grant_without_password_is_rejected() {
+    let s = Server::start("grant-nopwd");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    // 完全省略 password 字段
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+    );
+    assert_eq!(r["success"], json!(false), "缺 password 必须被拒: {}", r);
+    assert!(
+        text(&r, "message").contains("口令"),
+        "应说明缺少口令: {}",
+        r
+    );
+
+    // 显式空串同样被拒
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u2", "password": "" }),
+    );
+    assert_eq!(r["success"], json!(false), "空口令必须被拒: {}", r);
+
+    // 被拒的授权不得写库
+    let pool = pool_for(&s.db());
+    let n: i64 = runtime().block_on(async {
+        sqlx::query("SELECT COUNT(*) AS n FROM grants WHERE app_id = 'app-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("n")
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(n, 0, "被拒的授权不得写库");
+
+    // 也就取不到密钥
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "anything" }),
+    );
+    assert_eq!(r["success"], json!(false));
+    assert!(text(&r, "message").contains("未授权"), "应报未授权: {}", r);
+}
+
+#[test]
 fn test_grant_then_revoke_blocks_key() {
     let s = Server::start("grant-revoke");
     register(s.port, "app-a", "secret-a", "KEY-A", true);
 
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
 
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(text(&r, "key"), "KEY-A");
 
     let r = s.post(
@@ -377,7 +603,10 @@ fn test_grant_then_revoke_blocks_key() {
     );
     assert_eq!(r["success"], json!(true));
 
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(r["success"], json!(false), "吊销后必须取不到密钥");
 }
 
@@ -388,18 +617,21 @@ fn test_wrong_secret_cannot_grant_or_revoke() {
 
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "bad", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "bad", "user_id": "u1", "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(false));
 
     // 用错误密钥授权不生效，用户仍然拿不到密钥
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(r["success"], json!(false));
 
     // 用错误密钥也不能吊销别人的授权
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
     let r = s.post(
@@ -407,7 +639,10 @@ fn test_wrong_secret_cannot_grant_or_revoke() {
         json!({ "app_id": "app-a", "secret": "bad", "user_id": "u1" }),
     );
     assert_eq!(r["success"], json!(false));
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(text(&r, "key"), "KEY-A", "错误密钥的吊销不应生效");
 }
 
@@ -418,11 +653,14 @@ fn test_expired_grant_rejected_and_pruned() {
     // 过期时间写成很久以前
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "expires_at": "20200101" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1", "expires_at": "20200101" }),
     );
     assert_eq!(r["success"], json!(true));
 
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(r["success"], json!(false));
     assert!(text(&r, "message").contains("过期"), "应提示过期: {}", r);
 
@@ -445,10 +683,13 @@ fn test_permanent_grant_never_expires() {
     register(s.port, "app-a", "secret-a", "KEY-A", true);
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "expires_at": "永久" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1", "expires_at": "永久" }),
     );
     assert_eq!(r["success"], json!(true));
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(text(&r, "key"), "KEY-A");
 }
 
@@ -524,10 +765,10 @@ fn test_ip_whitelist_blocks_non_matching_source() {
     assert!(r.get("key").is_none(), "拒绝时不能带 key 字段: {}", r);
     assert!(text(&r, "message").contains("白名单"), "应说明原因: {}", r);
 
-    // 已授权用户路径同样被拒
+    // 已授权用户路径同样被拒：注意这里故意不带口令，用来证明 IP 白名单先于口令校验执行
     let r = s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
     let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
@@ -614,7 +855,7 @@ fn test_request_rejected_when_temp_disabled() {
     register(s.port, "app-a", "secret-a", "KEY-A", false);
     let r = s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3 }),
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3, "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(false));
     assert!(text(&r, "message").contains("未开启"));
@@ -627,14 +868,14 @@ fn test_approve_grants_by_requested_days() {
 
     let r = s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5, "message": "做作业" }),
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5, "message": "做作业", "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
 
     // 重复提交不产生第二条待审批
     let r = s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5 }),
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5, "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
 
@@ -648,13 +889,17 @@ fn test_approve_grants_by_requested_days() {
         "只应有一条待审批"
     );
 
+    // 审批时不带口令：沿用申请时记录的口令散列
     let r = s.post(
         "/api/approve",
         json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
     );
     assert_eq!(r["success"], json!(true));
 
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(text(&r, "key"), "KEY-A", "审批通过后应可取密钥");
 
     // 审批后列表里不再有该申请
@@ -671,7 +916,7 @@ fn test_deny_does_not_grant() {
     register(s.port, "app-a", "secret-a", "KEY-A", true);
     s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5 }),
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5, "password": "pw-u1" }),
     );
 
     let r = s.post(
@@ -680,7 +925,10 @@ fn test_deny_does_not_grant() {
     );
     assert_eq!(r["success"], json!(true));
 
-    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
     assert_eq!(r["success"], json!(false), "被拒绝不应获得授权");
 }
 
@@ -690,14 +938,222 @@ fn test_request_short_circuits_when_already_granted() {
     register(s.port, "app-a", "secret-a", "KEY-A", true);
     s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1" }),
     );
     let r = s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5 }),
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 5, "password": "pw-u1" }),
     );
     assert_eq!(r["success"], json!(true));
     assert!(text(&r, "message").contains("已有权限"));
+}
+
+#[test]
+fn test_request_rejects_non_positive_need_days() {
+    let s = Server::start("need-days");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    for bad in [json!(0), json!(-3)] {
+        let r = s.post(
+            "/api/request",
+            json!({ "app_id": "app-a", "user_id": "u1", "need_days": bad, "password": "pw-u1" }),
+        );
+        assert_eq!(
+            r["success"],
+            json!(false),
+            "need_days={} 应被拒: {}",
+            bad,
+            r
+        );
+        assert!(
+            text(&r, "message").contains("正整数"),
+            "应说明天数要求: {}",
+            r
+        );
+    }
+
+    // 完全省略 need_days 同样被拒
+    let r = s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
+    assert_eq!(r["success"], json!(false), "缺 need_days 应被拒: {}", r);
+
+    // 非法申请不得写库
+    let pool = pool_for(&s.db());
+    let n: i64 = runtime().block_on(async {
+        sqlx::query("SELECT COUNT(*) AS n FROM requests WHERE need_days IS NULL OR need_days <= 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("n")
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(n, 0, "非正天数的申请不得写库");
+
+    // 正整数天数照常受理
+    let r = s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 1, "password": "pw-u1" }),
+    );
+    assert_eq!(r["success"], json!(true), "合法天数应受理: {}", r);
+}
+
+#[test]
+fn test_request_without_password_is_rejected() {
+    let s = Server::start("request-nopwd");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    let r = s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3 }),
+    );
+    assert_eq!(r["success"], json!(false), "缺口令的申请应被拒: {}", r);
+    assert!(
+        text(&r, "message").contains("口令"),
+        "应说明缺少口令: {}",
+        r
+    );
+
+    let r = s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3, "password": "" }),
+    );
+    assert_eq!(r["success"], json!(false), "空口令的申请应被拒: {}", r);
+
+    // 列表里不应出现任何申请
+    let r = s.post(
+        "/api/requests",
+        json!({ "app_id": "app-a", "secret": "secret-a" }),
+    );
+    assert_eq!(r["requests"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn test_approve_without_pending_request_is_rejected() {
+    let s = Server::start("approve-none");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    // 从来没申请过：不能凭空造一条授权
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "ghost", "password": "pw-ghost" }),
+    );
+    assert_eq!(r["success"], json!(false), "无待审批申请必须被拒: {}", r);
+    assert!(text(&r, "message").contains("待审批"), "应说明原因: {}", r);
+
+    let pool = pool_for(&s.db());
+    let n: i64 = runtime().block_on(async {
+        sqlx::query("SELECT COUNT(*) AS n FROM grants WHERE app_id = 'app-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("n")
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(n, 0, "无申请的审批不得写授权");
+
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "ghost", "password": "pw-ghost" }),
+    );
+    assert_eq!(r["success"], json!(false));
+
+    // 同一申请也不能重复审批
+    s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3, "password": "pw-u1" }),
+    );
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+    );
+    assert_eq!(r["success"], json!(true));
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+    );
+    assert_eq!(
+        r["success"],
+        json!(false),
+        "已审批的申请不能再次审批: {}",
+        r
+    );
+}
+
+#[test]
+fn test_approve_carries_request_password_to_grant() {
+    let s = Server::start("approve-carry");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+
+    let r = s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3, "password": "pw-user" }),
+    );
+    assert_eq!(r["success"], json!(true));
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+    );
+    assert_eq!(r["success"], json!(true), "沿用申请口令的审批应成功: {}", r);
+
+    // 申请时设的口令生效
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-user" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-A", "审批后应能用申请时的口令取钥");
+
+    // 别的口令不行
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-other" }),
+    );
+    assert_eq!(r["success"], json!(false));
+
+    // 授权行确实带上了散列
+    let pool = pool_for(&s.db());
+    let (salt, hash): (Option<String>, Option<String>) = runtime().block_on(async {
+        let row = sqlx::query("SELECT pwd_salt, pwd_hash FROM grants WHERE app_id = 'app-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        (row.get("pwd_salt"), row.get("pwd_hash"))
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(salt.map(|s| s.len()), Some(32), "授权行应带盐");
+    assert_eq!(hash.map(|h| h.len()), Some(64), "授权行应带散列");
+}
+
+#[test]
+fn test_approve_can_set_password_overriding_request() {
+    let s = Server::start("approve-override");
+    register(s.port, "app-a", "secret-a", "KEY-A", true);
+    s.post(
+        "/api/request",
+        json!({ "app_id": "app-a", "user_id": "u1", "need_days": 3, "password": "pw-user" }),
+    );
+
+    // 管理员在审批时指定口令：覆盖申请时的口令
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-admin" }),
+    );
+    assert_eq!(r["success"], json!(true));
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-admin" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-A");
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-user" }),
+    );
+    assert_eq!(
+        r["success"],
+        json!(false),
+        "管理员指定的口令应覆盖申请时的口令"
+    );
 }
 
 // ===== 多应用隔离 =====
@@ -709,11 +1165,11 @@ fn test_requests_and_logs_are_app_scoped() {
     register(s.port, "app-b", "secret-b", "KEY-B", true);
     s.post(
         "/api/request",
-        json!({ "app_id": "app-a", "user_id": "alice", "need_days": 1 }),
+        json!({ "app_id": "app-a", "user_id": "alice", "need_days": 1, "password": "pw-alice" }),
     );
     s.post(
         "/api/request",
-        json!({ "app_id": "app-b", "user_id": "bob", "need_days": 1 }),
+        json!({ "app_id": "app-b", "user_id": "bob", "need_days": 1, "password": "pw-bob" }),
     );
 
     // 拿 A 的密钥查 A：只能看到 alice
@@ -765,9 +1221,12 @@ fn test_audit_logs_record_success_and_failure() {
     // 一次成功：授权后取密钥
     s.post(
         "/api/grant",
-        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1", "password": "pw-u1" }),
     );
-    s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "user_id": "u1", "password": "pw-u1" }),
+    );
 
     let r = s.post(
         "/api/logs",
@@ -784,6 +1243,86 @@ fn test_audit_logs_record_success_and_failure() {
         key_logs.iter().any(|l| l["success"] == json!(true)),
         "应记录成功的取钥"
     );
+}
+
+// ===== 数据库配置与故障 =====
+
+/// 库必须跑在 WAL 日志模式下（默认的 delete 模式会让每次写都独占整库）。
+///
+/// journal_mode 是持久化在库文件里的：用一条没有设置 journal_mode 的连接打开也应读到 wal，
+/// 所以这里不需要复用服务端的连接参数，就足以证明服务端确实把库切到了 WAL。
+#[test]
+fn test_database_runs_in_wal_mode() {
+    let s = Server::start("wal-mode");
+    register(s.port, "app-a", "secret-a", "KEY-A", false);
+
+    let pool = pool_for(&s.db());
+    let mode: String = runtime().block_on(async {
+        sqlx::query("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0)
+    });
+    runtime().block_on(pool.close());
+
+    assert_eq!(
+        mode.to_lowercase(),
+        "wal",
+        "库应处于 WAL 模式，实际: {}",
+        mode
+    );
+}
+
+/// 数据库故障必须变成 JSON 500，而不是被 axum 掐断连接。
+///
+/// 构造方式：服务端起来后，从测试进程把 apps 表换成一张没有 secret 列的同名表，
+/// 之后 /api/register 的 `SELECT secret FROM apps ...` 必然报错（no such column: secret）。
+/// 换表而不是改文件权限：Windows 上删不掉已被服务端打开的库文件，权限也不是可靠手段，
+/// 而这条查询的失败是确定的。
+///
+/// 这条测试确实会失败在旧实现上：老代码在这里 unwrap → 任务 panic → axum 断开连接，
+/// 响应连状态行都没有，post_status_json 会在「响应缺少状态行」处 panic。
+#[test]
+fn test_db_failure_returns_json_500() {
+    let s = Server::start("db-fail");
+    register(s.port, "app-a", "secret-a", "KEY-A", false);
+
+    let pool = pool_for(&s.db());
+    runtime().block_on(async {
+        sqlx::query("DROP TABLE apps").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE apps (x TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime().block_on(pool.close());
+
+    let (status, body) = post_status_json(
+        s.port,
+        "/api/register",
+        json!({ "app_id": "app-b", "secret": "secret-b", "content_key": "KEY-B" }),
+    );
+
+    assert_eq!(status, 500, "数据库故障应返回 500，实际 body: {}", body);
+    assert_eq!(
+        body["success"],
+        json!(false),
+        "500 响应体应与其它接口同形: {}",
+        body
+    );
+    let message = text(&body, "message");
+    assert!(!message.is_empty(), "500 响应应带说明: {}", body);
+    assert!(
+        !message.contains("no such") && !message.contains("apps"),
+        "message 不应泄露底层 SQL 细节: {}",
+        body
+    );
+    assert!(body.get("key").is_none(), "500 响应不应带 key: {}", body);
+
+    // 故障期间健康检查照常：它本来就不访问数据库
+    let (health, _) = get_json(s.port, "/healthz");
+    assert_eq!(health, 200, "数据库故障不应影响健康检查");
 }
 
 // ===== 启动、迁移与维护 =====
@@ -854,6 +1393,77 @@ fn create_v1_db(db: &Path) {
     runtime().block_on(pool.close());
 }
 
+/// 造一个 v2 的库文件（v1 表结构 + `apps.ip_whitelist`），即本次改动前已部署的形态。
+///
+/// 与 `create_v1_db` 一样手工复刻建表语句、不复用服务端的 MIGRATIONS：
+/// 否则「测试跟着实现改」会把升级路径的真实性验证掉。
+fn create_v2_db(db: &Path) {
+    let pool = pool_for(db);
+    runtime().block_on(async {
+        for stmt in [
+            r#"CREATE TABLE apps (
+                app_id TEXT PRIMARY KEY,
+                secret TEXT NOT NULL,
+                content_key TEXT NOT NULL,
+                allow_temp BOOLEAN DEFAULT 0,
+                created_at TEXT NOT NULL,
+                ip_whitelist TEXT
+            )"#,
+            r#"CREATE TABLE grants (
+                app_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (app_id, user_id)
+            )"#,
+            r#"CREATE TABLE requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                need_days INTEGER,
+                message TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            )"#,
+            r#"CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL,
+                user_id TEXT,
+                action TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                details TEXT,
+                created_at TEXT NOT NULL
+            )"#,
+            "CREATE INDEX idx_requests_app_status ON requests(app_id, status)",
+            "CREATE INDEX idx_audit_app ON audit_logs(app_id, id)",
+        ] {
+            sqlx::query(stmt).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO apps (app_id, secret, content_key, allow_temp, created_at, ip_whitelist) VALUES ('app-v2', 'secret-v2', 'KEY-V2', 1, '20200101000000', '[\"127.0.0.0/8\"]')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO grants (app_id, user_id, granted_at, expires_at) VALUES ('app-v2', 'u1', '20200101', NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO requests (app_id, user_id, need_days, message, status, created_at) VALUES ('app-v2', 'u2', 7, '做实验', 'pending', '20200101000000')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO audit_logs (app_id, user_id, action, success, details, created_at) VALUES ('app-v2', 'u1', 'grant', 1, '授权成功', '20200101000000')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 2")
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime().block_on(pool.close());
+}
+
 #[test]
 fn test_v1_database_upgrades_without_data_loss() {
     let dir = temp_dir("upgrade-v1");
@@ -862,43 +1472,61 @@ fn test_v1_database_upgrades_without_data_loss() {
 
     let s = Server::start_in_dir(&dir, ROOT_URL, &[]);
 
-    // 老数据仍在：管理员取钥与已授权用户取钥都成功
+    // 老数据仍在：管理员取钥照常（管理员路径本来就不需要口令）
     let r = s.post(
         "/api/key",
         json!({ "app_id": "app-v1", "secret": "secret-v1" }),
     );
     assert_eq!(text(&r, "key"), "KEY-V1", "v1 升级后旧数据丢失: {}", r);
-    let r = s.post("/api/key", json!({ "app_id": "app-v1", "user_id": "u1" }));
-    assert_eq!(text(&r, "key"), "KEY-V1", "v1 升级后授权丢失: {}", r);
 
-    // 版本升到 v2，旧行的新列为 NULL（= 不限制）
+    // 但迁移前建立的授权没有口令散列，普通用户路径必须拒绝并要求重新授权
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v1", "user_id": "u1", "password": "whatever" }),
+    );
+    assert_eq!(r["success"], json!(false), "无口令的老授权必须被拒: {}", r);
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段");
+    assert!(
+        text(&r, "message").contains("重新授权"),
+        "应提示管理员重新授权: {}",
+        r
+    );
+
+    // 版本升到 v3，旧行的新列为 NULL
     let pool = pool_for(&db);
-    let (ver, wl, grant_logs): (i64, Option<String>, i64) = runtime().block_on(async {
-        let ver = sqlx::query("PRAGMA user_version")
+    let (ver, wl, grant_logs, pwd_hash): (i64, Option<String>, i64, Option<String>) = runtime()
+        .block_on(async {
+            let ver = sqlx::query("PRAGMA user_version")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get(0);
+            let wl = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = 'app-v1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get::<Option<String>, _>("ip_whitelist");
+            let grant_logs = sqlx::query(
+                "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-v1' AND action = 'grant'",
+            )
             .fetch_one(&pool)
             .await
             .unwrap()
-            .get(0);
-        let wl = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = 'app-v1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-            .get::<Option<String>, _>("ip_whitelist");
-        let grant_logs = sqlx::query(
-            "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-v1' AND action = 'grant'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap()
-        .get("n");
-        (ver, wl, grant_logs)
-    });
+            .get("n");
+            let pwd_hash = sqlx::query("SELECT pwd_hash FROM grants WHERE app_id = 'app-v1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get::<Option<String>, _>("pwd_hash");
+            (ver, wl, grant_logs, pwd_hash)
+        });
     runtime().block_on(pool.close());
-    assert_eq!(ver, 2, "v1 库应升级到 v2");
+    assert_eq!(ver, 3, "v1 库应升级到 v3");
     assert_eq!(wl, None, "v1 旧行的 ip_whitelist 应为空（不限制）");
     assert_eq!(grant_logs, 1, "v1 库的审计日志被清掉了");
+    assert_eq!(pwd_hash, None, "迁移前的老授权 pwd_hash 应为 NULL");
 
-    // 升级后的库照常支持新字段
+    // 升级后的库照常支持新字段：重新授权带口令后即可取钥
     let r = register_with_ip_whitelist(
         s.port,
         "app-new",
@@ -913,6 +1541,143 @@ fn test_v1_database_upgrades_without_data_loss() {
         json!({ "app_id": "app-new", "secret": "secret-new" }),
     );
     assert_eq!(text(&r, "key"), "KEY-NEW");
+
+    // 管理员对老授权重新授权（补上口令）后，用户路径恢复可用
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-v1", "secret": "secret-v1", "user_id": "u1", "password": "pw-new" }),
+    );
+    assert_eq!(r["success"], json!(true), "重新授权失败: {}", r);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v1", "user_id": "u1", "password": "pw-new" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-V1", "重新授权后应能取钥: {}", r);
+}
+
+#[test]
+fn test_v2_database_upgrades_without_data_loss() {
+    let dir = temp_dir("upgrade-v2");
+    let db = dir.join("secunzip.db");
+    create_v2_db(&db);
+
+    let s = Server::start_in_dir(&dir, ROOT_URL, &[]);
+
+    // 旧数据仍在：管理员取钥照常，且 v2 的白名单没有被迁移抹掉
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v2", "secret": "secret-v2" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-V2", "v2 升级后旧数据丢失: {}", r);
+
+    // 迁移前建立的授权 pwd_hash 为 NULL → 用户路径拒绝并要求重新授权
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v2", "user_id": "u1", "password": "whatever" }),
+    );
+    assert_eq!(r["success"], json!(false), "无口令的老授权必须被拒: {}", r);
+    assert!(
+        text(&r, "message").contains("重新授权"),
+        "应提示管理员重新授权: {}",
+        r
+    );
+
+    // 旧的待审批申请仍在，只是没有口令散列
+    let r = s.post(
+        "/api/requests",
+        json!({ "app_id": "app-v2", "secret": "secret-v2" }),
+    );
+    let users: Vec<String> = r["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| text(x, "user_id"))
+        .collect();
+    assert_eq!(users, vec!["u2".to_string()], "v2 升级后待审批申请丢失");
+
+    // 新列确实加上了（列不存在时这条查询会直接报错），且老行的旧字段原封不动。
+    // 审计日志只筛迁移前就存在的那一条：测试前面的取钥请求本身也会写日志，
+    // 统计全部条数会把新写的日志算进来（曾因此误判为「审计日志被清掉」）。
+    let pool = pool_for(&db);
+    let (ver, wl): (i64, Option<String>) = runtime().block_on(async {
+        let ver = sqlx::query("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
+        let wl = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = 'app-v2'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get::<Option<String>, _>("ip_whitelist");
+        (ver, wl)
+    });
+    let (req_salt, req_hash): (Option<String>, Option<String>) = runtime().block_on(async {
+        let req = sqlx::query("SELECT pwd_salt, pwd_hash FROM requests WHERE app_id = 'app-v2'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        (
+            req.get::<Option<String>, _>("pwd_salt"),
+            req.get::<Option<String>, _>("pwd_hash"),
+        )
+    });
+    let (granted_at, grant_hash): (String, Option<String>) = runtime().block_on(async {
+        let grant = sqlx::query(
+            "SELECT granted_at, pwd_hash FROM grants WHERE app_id = 'app-v2' AND user_id = 'u1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        (grant.get("granted_at"), grant.get("pwd_hash"))
+    });
+    let (log_details, log_created): (String, String) = runtime().block_on(async {
+        let log = sqlx::query(
+            "SELECT details, created_at FROM audit_logs WHERE app_id = 'app-v2' AND action = 'grant'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        (log.get("details"), log.get("created_at"))
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(ver, 3, "v2 库应升级到 v3");
+    assert_eq!(
+        wl.as_deref(),
+        Some(r#"["127.0.0.0/8"]"#),
+        "v2 的白名单在升级中丢失"
+    );
+    assert_eq!(req_salt, None, "迁移前的老申请 pwd_salt 应为 NULL");
+    assert_eq!(req_hash, None, "迁移前的老申请 pwd_hash 应为 NULL");
+    assert_eq!(grant_hash, None, "迁移前的老授权 pwd_hash 应为 NULL");
+    // ALTER TABLE ADD COLUMN 不重建表：老行的原有字段必须逐字保留
+    assert_eq!(granted_at, "20200101", "v2 的授权行 granted_at 丢了");
+    assert_eq!(log_details, "授权成功", "v2 的审计日志内容变了");
+    assert_eq!(log_created, "20200101000000", "v2 的审计日志时间戳丢了");
+
+    // 老申请没有口令，管理员在审批时补一个也能走通
+    let r = s.post(
+        "/api/approve",
+        json!({ "app_id": "app-v2", "secret": "secret-v2", "user_id": "u2", "password": "pw-u2" }),
+    );
+    assert_eq!(r["success"], json!(true), "补口令审批失败: {}", r);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v2", "user_id": "u2", "password": "pw-u2" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-V2", "升级后新授权应可用: {}", r);
+
+    // 升级后的库照常支持新的完整流程
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-v2", "secret": "secret-v2", "user_id": "fresh", "password": "pw-fresh" }),
+    );
+    assert_eq!(r["success"], json!(true), "升级后授权失败: {}", r);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v2", "user_id": "fresh", "password": "pw-fresh" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-V2");
 }
 
 #[test]
@@ -974,7 +1739,7 @@ fn test_restart_keeps_data_and_migration_idempotent() {
         (ver, wl)
     });
     runtime().block_on(pool.close());
-    assert_eq!(ver, 2, "schema 版本应为 2");
+    assert_eq!(ver, 3, "schema 版本应为 3");
     assert_eq!(
         wl.as_deref(),
         Some(r#"["127.0.0.0/8"]"#),

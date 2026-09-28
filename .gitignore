@@ -5,6 +5,9 @@ target/
 # 运行时数据：含 content_key 与授权记录，禁止提交
 *.db
 *.db-journal
+# WAL 模式的副产物：-wal 里可能还有未回写的授权/密钥数据，-shm 是共享内存索引
+*.db-wal
+*.db-shm
 *.secret
 
 # 临时文件
