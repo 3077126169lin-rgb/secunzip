@@ -4,6 +4,9 @@
 //!   - GNU 目标（MinGW）：`windres`
 //!   - MSVC 目标：`rc`
 //!
+//! 这两者默认都不在 PATH 上（rc 只在 VS 开发者命令提示符里，windres 随 MSYS2 提供），
+//! 所以各自带一条常见安装路径的回退查找，否则会静默产出没有图标的可执行文件。
+//!
 //! 找不到图标或编译器时只打印警告、照常构建，不会让编译失败。
 
 use std::path::PathBuf;
@@ -51,14 +54,23 @@ fn main() {
     let msvc = target_env == "msvc";
     let obj = out_dir.join(if msvc { "app.res" } else { "app.o" });
 
+    let compiler = if msvc { find_rc() } else { find_windres() };
+    let Some(compiler) = compiler else {
+        println!(
+            "cargo:warning=找不到资源编译器（{}），未嵌入图标",
+            if msvc { "rc.exe" } else { "windres.exe" }
+        );
+        return;
+    };
+
     let status = if msvc {
-        Command::new("rc")
+        Command::new(&compiler)
             .arg("/nologo")
             .arg(format!("/fo{}", obj.display()))
             .arg(&rc_path)
             .status()
     } else {
-        Command::new("windres")
+        Command::new(&compiler)
             .arg(&rc_path)
             .arg("-O")
             .arg("coff")
@@ -75,6 +87,61 @@ fn main() {
             "cargo:warning=资源编译未成功（退出码 {:?}），未嵌入图标",
             s.code()
         ),
-        Err(e) => println!("cargo:warning=找不到资源编译器（{e}），未嵌入图标"),
+        Err(e) => println!("cargo:warning=资源编译器执行失败（{e}），未嵌入图标"),
     }
+}
+
+/// 在 PATH 上查找可执行文件
+fn on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
+}
+
+/// 查找 rc.exe：先看 PATH，再扫 Windows Kits 下的各版本 SDK 目录。
+fn find_rc() -> Option<PathBuf> {
+    if let Some(p) = on_path("rc.exe") {
+        return Some(p);
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for key in ["ProgramFiles(x86)", "ProgramFiles"] {
+        let Some(base) = std::env::var_os(key) else {
+            continue;
+        };
+        let bin = PathBuf::from(base).join("Windows Kits").join("10").join("bin");
+        let Ok(entries) = std::fs::read_dir(&bin) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path().join("x64").join("rc.exe");
+            if p.is_file() {
+                candidates.push(p);
+            }
+        }
+    }
+    // 目录名是 SDK 版本号，取最大的那个
+    candidates.sort();
+    candidates.pop()
+}
+
+/// 查找 windres.exe：先看 PATH，再试 MSYS2 的默认安装位置。
+fn find_windres() -> Option<PathBuf> {
+    if let Some(p) = on_path("windres.exe") {
+        return Some(p);
+    }
+    for root in ["C:\\msys64", "C:\\msys32"] {
+        for sub in [
+            "mingw64\\bin",
+            "ucrt64\\bin",
+            "mingw32\\bin",
+            "clang64\\bin",
+        ] {
+            let p = PathBuf::from(root).join(sub).join("windres.exe");
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
