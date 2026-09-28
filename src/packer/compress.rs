@@ -36,32 +36,90 @@ impl Compressor for ZipCompressor {
     }
 
     fn decompress(&self, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
-        let reader = std::io::Cursor::new(data);
-        let mut zip = zip::ZipArchive::new(reader)
-            .map_err(|e| crate::SecUnzipError::Unpacking(format!("打开ZIP失败: {}", e)))?;
-
-        let mut files = Vec::new();
-        for i in 0..zip.len() {
-            let mut file = zip
-                .by_index(i)
-                .map_err(|e| crate::SecUnzipError::Unpacking(format!("读取ZIP条目失败: {}", e)))?;
-
-            if file.is_dir() {
-                continue;
-            }
-
-            let name = file.name().to_string();
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)
-                .map_err(|e| crate::SecUnzipError::Unpacking(format!("读取文件内容失败: {}", e)))?;
-
-            files.push((name, content));
-        }
-        Ok(files)
+        decompress_zip_capped(data, crate::MAX_CONTENT_SIZE)
     }
 
     fn algo_name(&self) -> &str {
         "ZIP"
+    }
+}
+
+/// 按上限解压 ZIP 到内存。
+///
+/// 解压方向此前没有任何预算：单个条目可以把内存吃光，多条小条目累加同样没有上限
+/// （ZIP 炸弹放大）。打包侧 `builder.rs` 已按 `MAX_CONTENT_SIZE` 限制，这里用同一
+/// 常量把解压侧对齐，两侧不会漂移。`max` 参数化是为了让测试能用极小的上限验证
+/// 逻辑，而不必真的造出 2 GiB 数据。
+fn decompress_zip_capped(data: &[u8], max: u64) -> Result<Vec<(String, Vec<u8>)>> {
+    let reader = std::io::Cursor::new(data);
+    let mut zip = zip::ZipArchive::new(reader)
+        .map_err(|e| crate::SecUnzipError::Unpacking(format!("打开ZIP失败: {}", e)))?;
+
+    let mut files = Vec::new();
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        let mut file = zip
+            .by_index(i)
+            .map_err(|e| crate::SecUnzipError::Unpacking(format!("读取ZIP条目失败: {}", e)))?;
+
+        if file.is_dir() {
+            continue;
+        }
+
+        let name = file.name().to_string();
+
+        // 先看元数据声明的解压后大小，超预算直接拒绝，不分配内存
+        let declared = file.size();
+        total = total.checked_add(declared).ok_or_else(|| {
+            crate::SecUnzipError::Unpacking(format!(
+                "解压后总大小超过上限 {}（条目 {}）",
+                format_size(max),
+                name
+            ))
+        })?;
+        if total > max {
+            return Err(crate::SecUnzipError::Unpacking(format!(
+                "解压后总大小超过上限 {}（条目 {} 累计 {}）",
+                format_size(max),
+                name,
+                format_size(total)
+            )));
+        }
+
+        // 元数据可能被伪造，因此读取时再按剩余预算截断一次，双重保险
+        let remaining = max - total + declared;
+        let mut content = Vec::new();
+        file.by_ref()
+            .take(remaining.saturating_add(1))
+            .read_to_end(&mut content)
+            .map_err(|e| crate::SecUnzipError::Unpacking(format!("读取文件内容失败: {}", e)))?;
+
+        if content.len() as u64 > remaining {
+            return Err(crate::SecUnzipError::Unpacking(format!(
+                "解压后总大小超过上限 {}（条目 {} 实际超出声明大小）",
+                format_size(max),
+                name
+            )));
+        }
+
+        files.push((name, content));
+    }
+    Ok(files)
+}
+
+/// 把字节数格式化为可读文本（如 `2.00 GiB`、`512 B`）
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut idx = 0;
+    while value >= 1024.0 && idx < UNITS.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
+    }
+    if idx == 0 {
+        format!("{} {}", bytes, UNITS[0])
+    } else {
+        format!("{:.2} {}", value, UNITS[idx])
     }
 }
 
@@ -182,5 +240,78 @@ impl Compressor for StoreCompressor {
 
     fn algo_name(&self) -> &str {
         "Store"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造一个含若干条目的 ZIP：`entries` 为 (文件名, 解压后内容)
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let options = SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated)
+                .compression_level(Some(9));
+            for (name, content) in entries {
+                zip.start_file(*name, options).unwrap();
+                zip.write_all(content).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn test_decompress_rejects_oversized_single_entry() {
+        // 高度可压缩：1 MiB 的 0 压完只有几百字节，但解压后远超 1 KiB 上限
+        let payload = vec![0u8; 1024 * 1024];
+        let zip_data = make_zip(&[("bomb.bin", &payload)]);
+
+        let err = decompress_zip_capped(&zip_data, 1024).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("超过上限"), "实际错误: {}", msg);
+        assert!(msg.contains("bomb.bin"), "错误应点名条目: {}", msg);
+    }
+
+    #[test]
+    fn test_decompress_rejects_running_total() {
+        // 单条都不超限，但累加超过上限（多条小条目型放大）
+        let chunk = vec![7u8; 800];
+        let zip_data = make_zip(&[("a.bin", &chunk), ("b.bin", &chunk)]);
+
+        // 单条 800 < 1000，两条 1600 > 1000
+        let err = decompress_zip_capped(&zip_data, 1000).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("超过上限"), "实际错误: {}", msg);
+        assert!(msg.contains("b.bin"), "错误应点名越界条目: {}", msg);
+    }
+
+    #[test]
+    fn test_decompress_within_cap_roundtrips() {
+        let zip_data = make_zip(&[("hello.txt", b"Hello, World!"), ("sub/n.bin", b"Nested")]);
+
+        // 公共路径（真实 2 GiB 上限）必须行为不变
+        let files = ZipCompressor.decompress(&zip_data).unwrap();
+        assert_eq!(files.len(), 2);
+        let hello = files.iter().find(|(n, _)| n == "hello.txt").unwrap();
+        assert_eq!(hello.1, b"Hello, World!");
+
+        // Store 走同一条 ZIP 路径，同样受上限保护
+        let store = StoreCompressor.decompress(&zip_data).unwrap();
+        assert_eq!(store.len(), 2);
+
+        // 预算恰好等于解压后总大小：不越界，应成功
+        let small_ok = decompress_zip_capped(&zip_data, 19).unwrap();
+        assert_eq!(small_ok.len(), 2);
+    }
+
+    #[test]
+    fn test_format_size_readable() {
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(1024), "1.00 KiB");
+        assert_eq!(format_size(2 * 1024 * 1024 * 1024), "2.00 GiB");
     }
 }

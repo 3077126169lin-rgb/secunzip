@@ -44,6 +44,18 @@ fn parses_without_panic(data: &[u8]) -> bool {
     .is_ok()
 }
 
+/// 头部里 data_offset 字段的起始字节：固定前缀 magic(8)+version(2)+format(1)+config_len(4)=15，
+/// 之后是长度可变的 config，再之后依次是 data_offset/data_size/original_size。
+fn data_offset_field(bytes: &[u8]) -> usize {
+    let config_len = u32::from_le_bytes(bytes[11..15].try_into().unwrap()) as usize;
+    15 + config_len
+}
+
+/// 按小端把 u64 写回头部字段
+fn patch_u64(bytes: &mut [u8], at: usize, value: u64) {
+    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+
 #[test]
 fn test_valid_sample_still_parses() {
     // 先确认样本本身可用，否则下面的用例会因为样本坏了而失去意义
@@ -86,6 +98,48 @@ fn test_parser_never_panics_on_bit_flips() {
         "翻转这些字节位时解析器 panic 了: {:?}",
         panicked
     );
+}
+
+#[test]
+fn test_parser_rejects_out_of_range_data_fields() {
+    // 逐字节采样翻位碰不到 data_offset/data_size 的高位字节，截断也造不出这些值，
+    // 因此这里用合法产物改字节，直接构造「范围越界且 offset+size 溢出 u64」的组合。
+    let bytes = sample_bytes();
+    let field = data_offset_field(&bytes);
+    let file_len = bytes.len() as u64;
+
+    let cases: &[(&str, u64, u64)] = &[
+        ("偏移 u64::MAX", u64::MAX, 0),
+        ("偏移 u64::MAX-1，大小 1", u64::MAX - 1, 1),
+        ("偏移 u64::MAX，大小 1（相加回绕到 0）", u64::MAX, 1),
+        ("偏移 100，大小 u64::MAX（相加回绕到 99）", 100, u64::MAX),
+        ("偏移刚好越过文件末尾", file_len + 1, 0),
+        ("偏移越过文件末尾且相加溢出", file_len + 1, u64::MAX),
+        ("大小 u64::MAX", 0, u64::MAX),
+    ];
+
+    for (name, offset, size) in cases {
+        let mut corrupted = bytes.clone();
+        patch_u64(&mut corrupted, field, *offset);
+        patch_u64(&mut corrupted, field + 8, *size);
+
+        // 旧实现在这里 debug 溢出 panic / release 回绕后切片 panic，两者都要挡住
+        assert!(
+            parses_without_panic(&corrupted),
+            "{}：解析器 panic 了，应返回错误",
+            name
+        );
+        let err = RuntimeLoader::from_bytes(&corrupted)
+            .err()
+            .unwrap_or_else(|| panic!("{}：越界的加密数据范围不应被接受", name));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("数据") || msg.contains("溢出") || msg.contains("范围"),
+            "{}：错误信息应说明加密数据范围有问题，实际: {}",
+            name,
+            msg
+        );
+    }
 }
 
 #[test]

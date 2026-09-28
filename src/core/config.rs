@@ -74,6 +74,26 @@ impl PackHeader {
         }
 
         let version = u16::from_le_bytes(data[8..10].try_into().unwrap());
+
+        // 版本必须在读配置之前比对：这是解析不可信输入的入口，未来版本可能改过配置的
+        // 编码方式，用今天的规则硬解会得到「看似成功、内容错乱」的结果，必须明确报错。
+        // 低于当前版本同样拒绝：产物的版本字段由 builder 用 FORMAT_VERSION 写入，
+        // 不存在旧版本产物，出现更小的值只能说明文件被伪造或损坏。
+        if version > crate::FORMAT_VERSION {
+            return Err(crate::SecUnzipError::Format(format!(
+                "文件格式版本 {} 高于本程序支持的版本 {}：该文件由更新版本的 secunzip 生成，当前程序无法读取",
+                version,
+                crate::FORMAT_VERSION
+            )));
+        }
+        if version < crate::FORMAT_VERSION {
+            return Err(crate::SecUnzipError::Format(format!(
+                "文件格式版本 {} 低于本程序支持的版本 {}：该文件由旧版本或伪造工具生成，当前程序无法读取",
+                version,
+                crate::FORMAT_VERSION
+            )));
+        }
+
         let format = match data[10] {
             0 => OutputFormat::Exe,
             1 => OutputFormat::SecUnzip,
