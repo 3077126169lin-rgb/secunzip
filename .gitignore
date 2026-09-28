@@ -1,0 +1,13 @@
+# 构建产物
+target/
+/output/
+
+# 运行时数据：含 content_key 与授权记录，禁止提交
+*.db
+*.db-journal
+*.secret
+
+# 临时文件
+*.tmp
+.tmp/
+*.log
