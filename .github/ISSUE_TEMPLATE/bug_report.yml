@@ -1,0 +1,77 @@
+name: 缺陷报告
+description: 报告一个可复现的问题
+title: "[缺陷] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认问题在最新代码上仍可复现。安全相关的问题不要开公开 issue，报告方式见 SECURITY.md。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 实际发生了什么
+      description: 描述观察到的行为，附上完整输出或报错信息。
+      placeholder: 执行 … 后得到 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 你认为应该发生什么。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从干净状态开始，逐步写清命令与操作。
+      placeholder: |
+        1. 启动服务端 secunzip-server
+        2. secunzip pack …
+        3. …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响的组件
+      options:
+        - CLI（secunzip）
+        - GUI（secunzip-gui）
+        - 服务端（secunzip-server）
+        - 安装包 / 部署脚本
+        - 文档
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统与版本
+      placeholder: Windows 11 23H2 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: secunzip --version 的输出
+      description: 与 CLI 或 GUI 有关时填写。
+      placeholder: secunzip 0.1.0
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志输出
+      description: 服务端控制台输出、命令报错等。贴之前请确认其中没有 content_key 或 secret。
+      render: text
+    validations:
+      required: false

@@ -1,0 +1,39 @@
+name: 功能建议
+description: 提出一个新功能或改进
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先读 docs/design.md，确认建议与项目定位和三条原则不冲突。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述当前遇到的具体困难，而不是直接给方案。
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 设想的方案
+      description: 描述期望的行为。若涉及产物格式或 HTTP 接口，请说明向后兼容性。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 涉及的组件
+      options:
+        - CLI（secunzip）
+        - GUI（secunzip-gui）
+        - 服务端（secunzip-server）
+        - 产物格式 / 加密
+        - 安装包 / 部署脚本
+        - 文档
+    validations:
+      required: true
