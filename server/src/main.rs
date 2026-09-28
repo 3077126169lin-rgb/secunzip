@@ -1,11 +1,12 @@
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::Row;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 type Db = SqlitePool;
 
@@ -94,33 +95,41 @@ async fn main() {
         }
     };
     println!("SecUnzip Server on http://0.0.0.0:{}", port);
-    axum::serve(listener, app).await.unwrap();
+    // 必须带 ConnectInfo 才能拿到对端真实 IP：/api/key 的 IP 白名单靠它判定来源。
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 // ===== 数据库 schema 与维护 =====
 
 /// 当前 schema 版本，存于 `PRAGMA user_version`（该值随库文件持久化，不随连接）。
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
-/// 顺序迁移表：每项 (版本, 语句列表)。语句全部带 IF NOT EXISTS，对已有库幂等。
-const MIGRATIONS: &[(i64, &[&str])] = &[(
-    1,
-    &[
-        r#"CREATE TABLE IF NOT EXISTS apps (
+/// 顺序迁移表：每项 (版本, 语句列表)。
+/// v1 的建表/建索引语句都带 IF NOT EXISTS，对已有库幂等；v2 的加列没有该语法，见下。
+const MIGRATIONS: &[(i64, &[&str])] = &[
+    (
+        1,
+        &[
+            r#"CREATE TABLE IF NOT EXISTS apps (
             app_id TEXT PRIMARY KEY,
             secret TEXT NOT NULL,
             content_key TEXT NOT NULL,
             allow_temp BOOLEAN DEFAULT 0,
             created_at TEXT NOT NULL
         )"#,
-        r#"CREATE TABLE IF NOT EXISTS grants (
+            r#"CREATE TABLE IF NOT EXISTS grants (
             app_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
             granted_at TEXT NOT NULL,
             expires_at TEXT,
             PRIMARY KEY (app_id, user_id)
         )"#,
-        r#"CREATE TABLE IF NOT EXISTS requests (
+            r#"CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             app_id TEXT NOT NULL,
             user_id TEXT NOT NULL,
@@ -130,7 +139,7 @@ const MIGRATIONS: &[(i64, &[&str])] = &[(
             created_at TEXT NOT NULL,
             resolved_at TEXT
         )"#,
-        r#"CREATE TABLE IF NOT EXISTS audit_logs (
+            r#"CREATE TABLE IF NOT EXISTS audit_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             app_id TEXT NOT NULL,
             user_id TEXT,
@@ -139,10 +148,16 @@ const MIGRATIONS: &[(i64, &[&str])] = &[(
             details TEXT,
             created_at TEXT NOT NULL
         )"#,
-        "CREATE INDEX IF NOT EXISTS idx_requests_app_status ON requests(app_id, status)",
-        "CREATE INDEX IF NOT EXISTS idx_audit_app ON audit_logs(app_id, id)",
-    ],
-)];
+            "CREATE INDEX IF NOT EXISTS idx_requests_app_status ON requests(app_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_app ON audit_logs(app_id, id)",
+        ],
+    ),
+    // v2：apps 增加 ip_whitelist（JSON 数组文本，NULL / 空数组 = 不限制来源 IP）。
+    // SQLite 没有 ADD COLUMN IF NOT EXISTS；user_version 顺序门禁已保证该语句不会重跑，
+    // migrate() 另外会先查 PRAGMA table_info，列已存在时跳过，避免上次迁移在
+    // 「加列成功、写版本号失败」之间中断后无法再次启动。
+    (2, &["ALTER TABLE apps ADD COLUMN ip_whitelist TEXT"]),
+];
 
 /// 按 `PRAGMA user_version` 逐级应用迁移；版本高于本程序时拒绝启动。
 async fn migrate(db: &Db) -> Result<(), sqlx::Error> {
@@ -160,6 +175,13 @@ async fn migrate(db: &Db) -> Result<(), sqlx::Error> {
             continue;
         }
         for s in *stmts {
+            // 加列语句没有 IF NOT EXISTS，单独做一次存在性判断（见 MIGRATIONS 中的说明）
+            if let Some(rest) = s.strip_prefix("ALTER TABLE apps ADD COLUMN ") {
+                let col = rest.split_whitespace().next().unwrap_or("");
+                if column_exists(db, "apps", col).await? {
+                    continue;
+                }
+            }
             sqlx::query(s).execute(db).await?;
         }
         sqlx::query(&format!("PRAGMA user_version = {}", ver))
@@ -169,6 +191,14 @@ async fn migrate(db: &Db) -> Result<(), sqlx::Error> {
         current = *ver;
     }
     Ok(())
+}
+
+/// 表中是否已有该列（用于给没有 IF NOT EXISTS 的 ALTER TABLE 兜底）
+async fn column_exists(db: &Db, table: &str, column: &str) -> Result<bool, sqlx::Error> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
+        .fetch_all(db)
+        .await?;
+    Ok(rows.iter().any(|r| r.get::<String, _>("name") == column))
 }
 
 /// 每个 app_id 保留的审计日志条数，可用 `SECUNZIP_AUDIT_KEEP` 覆盖
@@ -203,6 +233,9 @@ struct RegisterRequest {
     secret: String,
     content_key: String,
     allow_temp: Option<bool>,
+    /// 允许取钥的来源 IP 列表（IPv4 单机或 CIDR）。缺省 / 空数组 = 不限制。
+    #[serde(default)]
+    ip_whitelist: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -305,12 +338,41 @@ async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-/// 注册应用（打包者调用）：存 app_id / secret / content_key / allow_temp
+/// 注册应用（打包者调用）：存 app_id / secret / content_key / allow_temp / ip_whitelist
 ///
 /// 防覆盖：app_id = 打包文件 MD5，任何拿到文件的人都能公开推导出来。
 /// 若无校验，任何人都能 register 覆盖他人文件的 content_key / secret（使文件变砖或接管管理权）。
 /// 因此：app_id 已存在时，只有持相同 secret 的同一打包者才允许更新，否则拒绝。
 async fn register_app(State(db): State<Db>, Json(req): Json<RegisterRequest>) -> Json<ApiResponse> {
+    // 白名单在入库前校验：非法条目直接拒绝，避免把无法匹配的条目写进库。
+    // 防御性说明：即使库里被人工改出非法条目，取钥时的匹配也会忽略它并按失败关闭处理。
+    let ip_whitelist = match &req.ip_whitelist {
+        None => None,
+        Some(list) => {
+            if let Some(bad) = list.iter().find(|e| !valid_ip_entry(e)) {
+                log_audit(
+                    &db,
+                    &req.app_id,
+                    "",
+                    "register",
+                    false,
+                    &format!("IP 白名单条目非法: {}", bad),
+                )
+                .await;
+                return err(&format!(
+                    "IP 白名单条目非法（仅支持 IPv4 单机或 CIDR，如 203.0.113.7、203.0.113.0/24）: {}",
+                    bad
+                ));
+            }
+            // 空数组与缺省等价，统一存 NULL
+            if list.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(list).unwrap())
+            }
+        }
+    };
+
     let existing: Option<SqliteRow> = sqlx::query("SELECT secret FROM apps WHERE app_id = ?")
         .bind(&req.app_id)
         .fetch_optional(&db)
@@ -337,11 +399,12 @@ async fn register_app(State(db): State<Db>, Json(req): Json<RegisterRequest>) ->
     } else {
         0i64
     };
-    sqlx::query("INSERT OR REPLACE INTO apps (app_id, secret, content_key, allow_temp, created_at) VALUES (?, ?, ?, ?, ?)")
+    sqlx::query("INSERT OR REPLACE INTO apps (app_id, secret, content_key, allow_temp, ip_whitelist, created_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(&req.app_id)
         .bind(&req.secret)
         .bind(&req.content_key)
         .bind(allow_temp)
+        .bind(&ip_whitelist)
         .bind(&now)
         .execute(&db).await.unwrap();
     log_audit(&db, &req.app_id, "", "register", true, "注册成功").await;
@@ -413,7 +476,36 @@ async fn revoke_user(State(db): State<Db>, Json(req): Json<GrantRequest>) -> Jso
 }
 
 /// 获取解密密钥：管理员凭 secret 直接取；否则验证授权未过期后下发 content_key
-async fn get_key(State(db): State<Db>, Json(req): Json<KeyRequest>) -> Json<ApiResponse> {
+///
+/// IP 白名单对管理员路径同样生效：白名单表达的是「这份密钥允许从哪里取」，
+/// 而管理员持有 secret 本来就能重新 register 并改写/清空白名单，
+/// 所以给管理员开绕行口子不增加任何防锁定能力，只会削弱限制本身，故两条路径统一校验。
+async fn get_key(
+    State(db): State<Db>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<KeyRequest>,
+) -> Json<ApiResponse> {
+    // 来源 IP 必须是 TCP 连接的对端地址（ConnectInfo），不接受请求体里自报的 IP：
+    // 客户端可以随意伪造请求体字段，但对端地址由内核填充。
+    let peer_ip = peer.ip();
+    let app_id = req.app_id.clone();
+    if let Err(reason) = check_source_ip(&db, &app_id, peer_ip).await {
+        log_audit(
+            &db,
+            &app_id,
+            if req.secret.is_some() {
+                "admin"
+            } else {
+                req.user_id.as_deref().unwrap_or("")
+            },
+            "key",
+            false,
+            &reason,
+        )
+        .await;
+        return err(&format!("{}，拒绝下发密钥", reason));
+    }
+
     // 管理员：凭 secret 直接取密钥，无需申请/授权
     if let Some(secret) = &req.secret {
         if verify_secret(&db, &req.app_id, secret).await {
@@ -666,6 +758,106 @@ async fn deny_request(State(db): State<Db>, Json(req): Json<ApproveRequest>) -> 
 
 // ===== 工具函数 =====
 
+/// 单条白名单条目是否匹配给定 IPv4 地址。
+///
+/// 支持 `203.0.113.7`（单机，等价 /32）与 `203.0.113.0/24`（CIDR，前缀 0..=32）。
+/// 只解析 IPv4：IPv6 条目（如 `2001:db8::1`）或任何非法写法一律返回 None，
+/// 由调用方按「不匹配」处理并告警。条目两端的空白被忽略。
+fn entry_matches(entry: &str, ip: Ipv4Addr) -> Option<bool> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    let (addr, prefix) = match entry.split_once('/') {
+        Some((a, p)) => {
+            let p: u32 = p.trim().parse().ok()?;
+            if p > 32 {
+                return None;
+            }
+            (a.trim(), p)
+        }
+        None => (entry, 32),
+    };
+    let net: Ipv4Addr = addr.parse().ok()?;
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    Some(u32::from(net) & mask == u32::from(ip) & mask)
+}
+
+/// 注册时校验白名单条目：能被 entry_matches 解析即为合法（与取钥时的匹配逻辑同源）
+fn valid_ip_entry(entry: &str) -> bool {
+    entry_matches(entry, Ipv4Addr::UNSPECIFIED).is_some()
+}
+
+/// 读取某应用的来源 IP 白名单。
+///
+/// 返回 None 表示不限制（列为 NULL 或空串、或存的是空数组）；
+/// 返回 Some(条目) 表示限制开启，其中条目可能为空（表示库里存了无法解析的内容）。
+async fn load_whitelist(db: &Db, app_id: &str) -> Option<Vec<String>> {
+    let row: SqliteRow = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = ?")
+        .bind(app_id)
+        .fetch_optional(db)
+        .await
+        .unwrap()?;
+    let raw: Option<String> = row.get("ip_whitelist");
+    let raw = match raw {
+        None => return None,
+        Some(s) if s.trim().is_empty() => return None,
+        Some(s) => s,
+    };
+    match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(v) if v.is_empty() => None,
+        Ok(v) => Some(v),
+        // 库里存了无法解析的内容（正常流程写不进来，只可能被人工改动）：
+        // 打印告警并失败关闭，返回空条目集 → 所有来源都不匹配 → 拒绝下发密钥。
+        Err(e) => {
+            eprintln!(
+                "应用 {} 的 ip_whitelist 无法解析（{}），按拒绝处理: {}",
+                app_id, e, raw
+            );
+            Some(Vec::new())
+        }
+    }
+}
+
+/// 取钥前的来源 IP 校验：Ok(()) 放行；Err(原因) 拒绝。
+///
+/// 语义：
+/// - 未设白名单（NULL / 空数组）→ 不限制，任何来源都放行，老部署行为不变；
+/// - IPv4 来源命中任一条目 → 放行；
+/// - IPv4 来源未命中 → 拒绝；
+/// - 条目非法（含 IPv6）→ 忽略该条目并告警；若因此没有任何可用条目，则全部拒绝（失败关闭）；
+/// - IPv6 来源地址 → 本服务端不实现 IPv6 匹配，白名单非空时一律拒绝（失败关闭）。
+async fn check_source_ip(db: &Db, app_id: &str, ip: IpAddr) -> Result<(), String> {
+    let Some(entries) = load_whitelist(db, app_id).await else {
+        return Ok(());
+    };
+    let allowed = match ip {
+        IpAddr::V4(v4) => entries.iter().any(|e| match entry_matches(e, v4) {
+            Some(matched) => matched,
+            None => {
+                eprintln!("忽略非法的 IP 白名单条目: {:?}（应用 {}）", e, app_id);
+                false
+            }
+        }),
+        IpAddr::V6(_) => {
+            eprintln!(
+                "来源 IP {} 为 IPv6，服务端白名单仅支持 IPv4，按拒绝处理（应用 {}）",
+                ip, app_id
+            );
+            false
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!("来源 IP {} 不在该文件的 IP 白名单内", ip))
+    }
+}
+
 /// 解析过期时间：支持 `Nd`（N天后）、`YYYYMMDD`、`永久`（=无过期）
 fn parse_expire(input: &str) -> Option<String> {
     let input = input.trim();
@@ -689,4 +881,71 @@ fn days_from_now(days: i64) -> String {
     (chrono::Utc::now() + chrono::Duration::days(days))
         .format("%Y%m%d")
         .to_string()
+}
+
+#[cfg(test)]
+mod ip_whitelist_tests {
+    use super::{entry_matches, valid_ip_entry};
+    use std::net::Ipv4Addr;
+
+    fn ip(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn test_entry_matches_single_host() {
+        assert_eq!(entry_matches("203.0.113.7", ip("203.0.113.7")), Some(true));
+        assert_eq!(entry_matches("203.0.113.7", ip("203.0.113.8")), Some(false));
+        // 两端空白被忽略
+        assert_eq!(
+            entry_matches(" 203.0.113.7 ", ip("203.0.113.7")),
+            Some(true)
+        );
+        // 单机写法等价于 /32
+        assert_eq!(
+            entry_matches("203.0.113.7/32", ip("203.0.113.7")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_entry_matches_cidr() {
+        assert_eq!(entry_matches("10.0.0.0/8", ip("10.255.1.2")), Some(true));
+        assert_eq!(entry_matches("10.0.0.0/8", ip("11.0.0.1")), Some(false));
+        assert_eq!(entry_matches("0.0.0.0/0", ip("8.8.8.8")), Some(true));
+        assert_eq!(
+            entry_matches("192.168.1.0/24", ip("192.168.1.255")),
+            Some(true)
+        );
+        assert_eq!(
+            entry_matches("192.168.1.0/24", ip("192.168.2.1")),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_entry_matches_malformed_is_none() {
+        for bad in [
+            "",
+            "   ",
+            "not-an-ip",
+            "10.0.0.0/33",
+            "10.0.0.0/",
+            "10.0.0.0/-1",
+            "10.0.0.0/8/8",
+            "10.0.0.256",
+            "2001:db8::1",
+            "2001:db8::/32",
+        ] {
+            assert_eq!(
+                entry_matches(bad, ip("10.0.0.1")),
+                None,
+                "应判为非法: {:?}",
+                bad
+            );
+            assert!(!valid_ip_entry(bad), "应判为非法: {:?}", bad);
+        }
+        assert!(valid_ip_entry("10.0.0.0/8"));
+        assert!(valid_ip_entry("127.0.0.1"));
+    }
 }

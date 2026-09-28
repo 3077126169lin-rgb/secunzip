@@ -93,12 +93,16 @@ impl Server {
     }
 
     fn start_env(name: &str, db_url: &str, envs: &[(&str, &str)]) -> Self {
-        let dir = temp_dir(name);
+        Self::start_in_dir(&temp_dir(name), db_url, envs)
+    }
+
+    /// 在一个已存在的目录里启动，用于需要在服务端启动前预置数据库文件的场景。
+    fn start_in_dir(dir: &Path, db_url: &str, envs: &[(&str, &str)]) -> Self {
         let port = free_port();
         let log = std::fs::File::create(dir.join("server.log")).unwrap();
 
         let mut cmd = Command::new(BIN);
-        cmd.current_dir(&dir)
+        cmd.current_dir(dir)
             .env("SECUNZIP_PORT", port.to_string())
             .env("DATABASE_URL", db_url)
             .stdout(Stdio::from(log))
@@ -111,7 +115,7 @@ impl Server {
         let mut s = Server {
             child: Some(child),
             port,
-            dir,
+            dir: dir.to_path_buf(),
         };
         s.wait_ready();
         s
@@ -241,6 +245,29 @@ fn register(port: u16, app: &str, secret: &str, content_key: &str, allow_temp: b
         json!({ "app_id": app, "secret": secret, "content_key": content_key, "allow_temp": allow_temp }),
     );
     assert_eq!(r["success"], json!(true), "注册失败: {}", r);
+}
+
+/// 带 ip_whitelist 的注册，返回原始响应以便断言失败情形。
+/// 单独一个函数：`register` 必须继续只发旧字段，用来验证省略该字段的向后兼容。
+fn register_with_ip_whitelist(
+    port: u16,
+    app: &str,
+    secret: &str,
+    content_key: &str,
+    allow_temp: bool,
+    ip_whitelist: Value,
+) -> Value {
+    post_json(
+        port,
+        "/api/register",
+        json!({
+            "app_id": app,
+            "secret": secret,
+            "content_key": content_key,
+            "allow_temp": allow_temp,
+            "ip_whitelist": ip_whitelist,
+        }),
+    )
 }
 
 fn text(v: &Value, field: &str) -> String {
@@ -437,6 +464,148 @@ fn test_key_for_unknown_app_fails() {
     assert_eq!(r["success"], json!(false));
 }
 
+// ===== 来源 IP 白名单 =====
+
+#[test]
+fn test_ip_whitelist_allows_matching_source() {
+    let s = Server::start("ip-allow");
+    // 测试请求从 127.0.0.1 发起，CIDR 与单机两种写法都应命中
+    let r = register_with_ip_whitelist(
+        s.port,
+        "app-cidr",
+        "secret-a",
+        "KEY-A",
+        true,
+        json!(["127.0.0.0/8"]),
+    );
+    assert_eq!(r["success"], json!(true), "注册失败: {}", r);
+    let r = register_with_ip_whitelist(
+        s.port,
+        "app-host",
+        "secret-b",
+        "KEY-B",
+        true,
+        json!(["127.0.0.1", "10.0.0.0/8"]),
+    );
+    assert_eq!(r["success"], json!(true), "注册失败: {}", r);
+
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-cidr", "secret": "secret-a" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-A", "命中的来源 IP 应能取钥: {}", r);
+
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-host", "secret": "secret-b" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-B", "命中的来源 IP 应能取钥: {}", r);
+}
+
+#[test]
+fn test_ip_whitelist_blocks_non_matching_source() {
+    let s = Server::start("ip-deny");
+    let r = register_with_ip_whitelist(
+        s.port,
+        "app-a",
+        "secret-a",
+        "KEY-A",
+        true,
+        json!(["10.0.0.0/8"]),
+    );
+    assert_eq!(r["success"], json!(true), "注册失败: {}", r);
+
+    // 管理员路径同样受白名单约束
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "secret": "secret-a" }),
+    );
+    assert_eq!(r["success"], json!(false), "非白名单来源必须被拒: {}", r);
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段: {}", r);
+    assert!(text(&r, "message").contains("白名单"), "应说明原因: {}", r);
+
+    // 已授权用户路径同样被拒
+    let r = s.post(
+        "/api/grant",
+        json!({ "app_id": "app-a", "secret": "secret-a", "user_id": "u1" }),
+    );
+    assert_eq!(r["success"], json!(true));
+    let r = s.post("/api/key", json!({ "app_id": "app-a", "user_id": "u1" }));
+    assert_eq!(r["success"], json!(false), "非白名单来源必须被拒: {}", r);
+    assert!(r.get("key").is_none(), "拒绝时不能带 key 字段: {}", r);
+    assert!(text(&r, "message").contains("白名单"), "应说明原因: {}", r);
+
+    // 拒绝必须留下可诊断的审计日志
+    let r = s.post(
+        "/api/logs",
+        json!({ "app_id": "app-a", "secret": "secret-a" }),
+    );
+    let logs = r["logs"].as_array().unwrap();
+    let denied: Vec<&Value> = logs
+        .iter()
+        .filter(|l| text(l, "action") == "key" && l["success"] == json!(false))
+        .collect();
+    assert!(denied.len() >= 2, "被拒的取钥应计入审计: {}", r);
+    assert!(
+        denied.iter().any(|l| text(l, "details").contains("白名单")),
+        "审计详情应写明 IP 白名单原因: {}",
+        r
+    );
+}
+
+#[test]
+fn test_register_without_ip_whitelist_keeps_unrestricted() {
+    let s = Server::start("ip-unset");
+    // 完全省略该字段：与旧版行为一致，不限制来源
+    register(s.port, "app-a", "secret-a", "KEY-A", false);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-a", "secret": "secret-a" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-A", "省略白名单字段应不限制: {}", r);
+
+    // 显式空数组等价于不限制
+    let r = register_with_ip_whitelist(s.port, "app-b", "secret-b", "KEY-B", false, json!([]));
+    assert_eq!(r["success"], json!(true), "空数组应被接受: {}", r);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-b", "secret": "secret-b" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-B", "空数组应不限制: {}", r);
+}
+
+#[test]
+fn test_register_rejects_malformed_ip_whitelist() {
+    let s = Server::start("ip-bad");
+    // 前缀越界、非法文本、IPv6、缺失前缀都必须在注册时拒绝
+    for bad in ["10.0.0.0/33", "not-an-ip", "2001:db8::1", "10.0.0.0/"] {
+        let r = register_with_ip_whitelist(
+            s.port,
+            "app-bad",
+            "secret-bad",
+            "KEY-BAD",
+            false,
+            json!([bad]),
+        );
+        assert_eq!(
+            r["success"],
+            json!(false),
+            "非法条目 {:?} 应被拒: {}",
+            bad,
+            r
+        );
+        assert!(text(&r, "message").contains("非法"), "应说明原因: {}", r);
+    }
+
+    // 被拒的注册不得写库：换一个 secret 仍应能注册成功（否则会被防覆盖规则挡住）
+    let r = post_json(
+        s.port,
+        "/api/register",
+        json!({ "app_id": "app-bad", "secret": "secret-ok", "content_key": "KEY-OK" }),
+    );
+    assert_eq!(r["success"], json!(true), "非法条目不应写库: {}", r);
+}
+
 // ===== 临时申请审批 =====
 
 #[test]
@@ -619,10 +788,146 @@ fn test_audit_logs_record_success_and_failure() {
 
 // ===== 启动、迁移与维护 =====
 
+/// 造一个 v1 的库文件（与已发布版本建出的表结构一致：apps 没有 ip_whitelist 列）。
+///
+/// 线上部署的库正是这个形态且带着数据，升级路径必须无损，所以这里手工复刻 v1 的建表语句，
+/// 不复用服务端的 MIGRATIONS——那样会把「测试跟着实现改」的假象当成验证。
+fn create_v1_db(db: &Path) {
+    let pool = pool_for(db);
+    runtime().block_on(async {
+        for stmt in [
+            r#"CREATE TABLE apps (
+                app_id TEXT PRIMARY KEY,
+                secret TEXT NOT NULL,
+                content_key TEXT NOT NULL,
+                allow_temp BOOLEAN DEFAULT 0,
+                created_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE grants (
+                app_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (app_id, user_id)
+            )"#,
+            r#"CREATE TABLE requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                need_days INTEGER,
+                message TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            )"#,
+            r#"CREATE TABLE audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_id TEXT NOT NULL,
+                user_id TEXT,
+                action TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                details TEXT,
+                created_at TEXT NOT NULL
+            )"#,
+            "CREATE INDEX idx_requests_app_status ON requests(app_id, status)",
+            "CREATE INDEX idx_audit_app ON audit_logs(app_id, id)",
+        ] {
+            sqlx::query(stmt).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO apps (app_id, secret, content_key, allow_temp, created_at) VALUES ('app-v1', 'secret-v1', 'KEY-V1', 1, '20200101000000')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO grants (app_id, user_id, granted_at, expires_at) VALUES ('app-v1', 'u1', '20200101', NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO audit_logs (app_id, user_id, action, success, details, created_at) VALUES ('app-v1', 'u1', 'grant', 1, '授权成功', '20200101000000')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+    });
+    runtime().block_on(pool.close());
+}
+
+#[test]
+fn test_v1_database_upgrades_without_data_loss() {
+    let dir = temp_dir("upgrade-v1");
+    let db = dir.join("secunzip.db");
+    create_v1_db(&db);
+
+    let s = Server::start_in_dir(&dir, ROOT_URL, &[]);
+
+    // 老数据仍在：管理员取钥与已授权用户取钥都成功
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-v1", "secret": "secret-v1" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-V1", "v1 升级后旧数据丢失: {}", r);
+    let r = s.post("/api/key", json!({ "app_id": "app-v1", "user_id": "u1" }));
+    assert_eq!(text(&r, "key"), "KEY-V1", "v1 升级后授权丢失: {}", r);
+
+    // 版本升到 v2，旧行的新列为 NULL（= 不限制）
+    let pool = pool_for(&db);
+    let (ver, wl, grant_logs): (i64, Option<String>, i64) = runtime().block_on(async {
+        let ver = sqlx::query("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get(0);
+        let wl = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = 'app-v1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get::<Option<String>, _>("ip_whitelist");
+        let grant_logs = sqlx::query(
+            "SELECT COUNT(*) AS n FROM audit_logs WHERE app_id = 'app-v1' AND action = 'grant'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get("n");
+        (ver, wl, grant_logs)
+    });
+    runtime().block_on(pool.close());
+    assert_eq!(ver, 2, "v1 库应升级到 v2");
+    assert_eq!(wl, None, "v1 旧行的 ip_whitelist 应为空（不限制）");
+    assert_eq!(grant_logs, 1, "v1 库的审计日志被清掉了");
+
+    // 升级后的库照常支持新字段
+    let r = register_with_ip_whitelist(
+        s.port,
+        "app-new",
+        "secret-new",
+        "KEY-NEW",
+        false,
+        json!(["127.0.0.0/8"]),
+    );
+    assert_eq!(r["success"], json!(true), "升级后注册失败: {}", r);
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-new", "secret": "secret-new" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-NEW");
+}
+
 #[test]
 fn test_restart_keeps_data_and_migration_idempotent() {
     let s = Server::start("restart");
-    register(s.port, "app-a", "secret-a", "KEY-A", true);
+    register_with_ip_whitelist(
+        s.port,
+        "app-a",
+        "secret-a",
+        "KEY-A",
+        true,
+        json!(["127.0.0.0/8"]),
+    );
+    // 一个没有白名单的应用，验证 v2 新列可为 NULL 且不影响取钥
+    register(s.port, "app-b", "secret-b", "KEY-B", false);
     let db = s.db();
     let port = s.port;
     let mut s = s;
@@ -648,17 +953,33 @@ fn test_restart_keeps_data_and_migration_idempotent() {
         json!({ "app_id": "app-a", "secret": "secret-a" }),
     );
     assert_eq!(text(&r, "key"), "KEY-A", "重启后数据丢失");
+    let r = s.post(
+        "/api/key",
+        json!({ "app_id": "app-b", "secret": "secret-b" }),
+    );
+    assert_eq!(text(&r, "key"), "KEY-B", "重启后数据丢失");
 
     let pool = pool_for(&db);
-    let ver: i64 = runtime().block_on(async {
-        sqlx::query("PRAGMA user_version")
+    let (ver, wl): (i64, Option<String>) = runtime().block_on(async {
+        let ver = sqlx::query("PRAGMA user_version")
             .fetch_one(&pool)
             .await
             .unwrap()
-            .get(0)
+            .get(0);
+        let wl = sqlx::query("SELECT ip_whitelist FROM apps WHERE app_id = 'app-a'")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get::<Option<String>, _>("ip_whitelist");
+        (ver, wl)
     });
     runtime().block_on(pool.close());
-    assert_eq!(ver, 1, "schema 版本应为 1");
+    assert_eq!(ver, 2, "schema 版本应为 2");
+    assert_eq!(
+        wl.as_deref(),
+        Some(r#"["127.0.0.0/8"]"#),
+        "重启后 ip_whitelist 丢失"
+    );
 }
 
 #[test]
