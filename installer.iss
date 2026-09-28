@@ -32,10 +32,12 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 普通用户可装（无需管理员，装到用户目录）
 PrivilegesRequired=lowest
+; 安装前必须阅读并接受免责声明（学生项目，非安全产品）
+LicenseFile=DISCLAIMER.txt
 ; ===== 应用列表（程序和功能）显示信息 =====
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-AppComments=SecUnzip 受控内容分发与内存挂载浏览工具
+AppComments=SecUnzip 受控内容分发与内存挂载浏览工具（学生项目，仅供实验）
 AppContact=
 AppReadmeFile={app}\README.md
 CreateUninstallRegKey=yes
@@ -43,6 +45,12 @@ CreateUninstallRegKey=yes
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+; 两种语言共用 Default.isl，这里统一覆盖免责声明页的文案
+[Messages]
+WizardLicense=免责声明与使用许可
+LicenseLabel=安装前请阅读以下内容
+LicenseLabel3=请阅读下面的免责声明。你必须接受这些条款才能继续安装。
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："
@@ -57,6 +65,9 @@ Source: "server\target\release\secunzip-server.exe"; DestDir: "{app}"; Flags: ig
 Source: "deploy\*"; DestDir: "{app}\deploy"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ATTRIBUTION.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "DISCLAIMER.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\README.md"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "assets\icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
@@ -66,6 +77,7 @@ Name: "{group}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"; IconF
 Name: "{group}\启动服务端"; Filename: "{app}\secunzip-server.exe"; IconFilename: "{app}\assets\icon.ico"
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{group}\归属声明与第三方许可"; Filename: "{app}\ATTRIBUTION.md"
+Name: "{group}\免责声明"; Filename: "{app}\DISCLAIMER.txt"
 Name: "{autodesktop}\{#MyAppName} 客户端"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\icon.ico"; Tasks: desktopicon
 
 [Registry]

@@ -12,13 +12,14 @@
 
 由 [installer.iss](../installer.iss) 定义：
 
-1. 把三个可执行文件装到 `{autopf}\SecUnzip` —— **按用户安装**（`PrivilegesRequired=lowest`），不需要管理员权限
-2. 一并放入 `deploy/` 脚本与文档
-3. 创建开始菜单快捷方式（「SecUnzip 客户端」「启动服务端」「卸载 SecUnzip」「归属声明与第三方许可」），桌面快捷方式可选
-4. 可选注册 `.secunzip` 文件关联（写 `HKCU`，不碰系统级设置）
-5. 安装完成后执行一次 `secunzip-gui.exe --register` 刷新关联
-6. **不安装任何依赖** —— 打包的二进制不需要 VC++ 运行库，也不依赖系统 libsqlite3
-7. 图标：安装包自身、开始菜单与桌面快捷方式、以及安装目录下的 `assets\icon.ico` 共用同一套图标（由 [assets/icon.ico](../assets/icon.ico) 提供，三个 exe 内也已嵌入同一图标，见 [build.rs](../build.rs)）
+1. 首屏为免责声明页（`LicenseFile=DISCLAIMER.txt`），必须点「我接受」才能继续安装
+2. 把三个可执行文件装到 `{autopf}\SecUnzip` —— **按用户安装**（`PrivilegesRequired=lowest`），不需要管理员权限
+3. 一并放入 `deploy/` 脚本与文档，以及 `README.md`、`ATTRIBUTION.md`、`SECURITY.md`、`DISCLAIMER.txt`、`LICENSE`
+4. 创建开始菜单快捷方式（「SecUnzip 客户端」「启动服务端」「卸载 SecUnzip」「归属声明与第三方许可」「免责声明」），桌面快捷方式可选
+5. 可选注册 `.secunzip` 文件关联（写 `HKCU`，不碰系统级设置）
+6. 安装完成后执行一次 `secunzip-gui.exe --register` 刷新关联
+7. **不安装任何依赖** —— 打包的二进制不需要 VC++ 运行库，也不依赖系统 libsqlite3
+8. 图标：安装包自身、开始菜单与桌面快捷方式、以及安装目录下的 `assets\icon.ico` 共用同一套图标（由 [assets/icon.ico](../assets/icon.ico) 提供，三个 exe 内也已嵌入同一图标，见 [build.rs](../build.rs)）
 
 ## 卸载
 
