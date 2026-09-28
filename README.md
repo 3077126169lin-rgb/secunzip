@@ -71,7 +71,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [gui/](gui/) | 图形客户端（egui）：[theme.rs](gui/src/theme.rs) 设计系统、[icons.rs](gui/src/icons.rs) 手搓矢量图标、[model.rs](gui/src/model.rs) 状态与持久化、[monitor.rs](gui/src/monitor.rs) 后台监控、[views/](gui/src/views/) 各页面、[app.rs](gui/src/app.rs) 业务逻辑、[api.rs](gui/src/api.rs) HTTP 调用 |
 | [tests/](tests/) | 集成测试 |
 | [testdata/](testdata/) | 手工试用用的示例数据（见 [docs/demo.md](docs/demo.md)；自动化测试自建临时文件） |
-| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)，截图在 [docs/images/](docs/images/) |
+| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)、[复盘](docs/retrospective.md)，架构图与截图在 [docs/images/](docs/images/) |
 | [.github/](.github/) | [ci.yml](.github/workflows/ci.yml) 在提交与 PR 时跑格式检查、clippy 与测试；[release.yml](.github/workflows/release.yml) 打 tag 时产出并发布安装包 |
 | [deploy/](deploy/) | 部署脚本与 Docker，见 [deploy/README.md](deploy/README.md) |
 | [assets/](assets/) | 打包用的运行时占位资源 |
@@ -179,6 +179,9 @@ secunzip open  docs.secunzip -u alice@example.com
 | [deploy/install-windows.ps1](deploy/install-windows.ps1)、[deploy/install-linux.sh](deploy/install-linux.sh) | 一键部署，并生成服务化脚本（NSSM / systemd） |
 | [docs/design.md](docs/design.md) | 设计文档 |
 | [docs/technical.md](docs/technical.md) | 技术方案清单 |
+| [docs/retrospective.md](docs/retrospective.md) | 复盘：站得住的设计、成了纸面的设计、缺陷的类型学、如果重来会怎么改 |
+| [docs/images/architecture.svg](docs/images/architecture.svg) | 系统与授权流程架构图（手写 SVG） |
+| [docs/images/artifact-format.svg](docs/images/artifact-format.svg) | 产物格式与头部字段图（手写 SVG） |
 | [docs/demo.md](docs/demo.md) | 演示脚本：可照着跑的完整流程与答辩要点 |
 | [docs/release.md](docs/release.md) | 发布与卸载说明 |
 
@@ -291,7 +294,8 @@ CLI 与 GUI 中含有 `#[cfg(not(windows))]` 分支，可编译到非 Windows �
 **安装包不安装任何依赖** —— 因为它打包的二进制本身没有依赖（见上）。
 
 发布产物的构成、卸载入口与构建方式见 [docs/release.md](docs/release.md)；
-推 `v*` tag 会触发 CI 自动构建并挂到 Release（`.github/workflows/release.yml`，尚未实跑验证）。
+推 `v*` tag 会触发 CI 自动构建并挂到 Release（`.github/workflows/release.yml`；已在 `v0.1.0` 至
+`v0.1.3` 上实跑，每个版本产出 4 个产物：Windows 安装包、CLI、Windows 服务端、Linux 服务端）。
 
 ## 安全
 
@@ -321,6 +325,7 @@ cd server && cargo test         # 服务端：30 个（3 个单元 + 27 个集�
 - [TESTING.md](TESTING.md) — 测试范围与手工验证
 - [docs/design.md](docs/design.md) — 设计：架构、产物格式、安全边界
 - [docs/technical.md](docs/technical.md) — 技术方案清单（全部选型与实现方案）
+- [docs/retrospective.md](docs/retrospective.md) — 复盘：哪些设计站得住、哪些成了纸面、重来会怎么改
 - [ATTRIBUTION.md](ATTRIBUTION.md) — 第三方归属
 - [SECURITY.md](SECURITY.md) — 安全状态与已知风险
 - [CHANGELOG.md](CHANGELOG.md) — 版本变更
