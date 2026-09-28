@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="570" viewBox="0 0 1100 570" role="img" aria-label="SecUnzip 系统与授权流程">
+  <title>SecUnzip 系统与授权流程</title>
+  <rect width="1100" height="570" fill="#FFFFFF"/>
+
+  <text x="30" y="42" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="21" font-weight="bold" fill="#111827">SecUnzip 系统与授权流程</text>
+
+  <!-- ===== 打包者 ===== -->
+  <rect x="30" y="70" width="260" height="230" rx="10" fill="#FFFFFF" stroke="#D1D5DB"/>
+  <rect x="30" y="70" width="260" height="38" rx="10" fill="#EFF6FF"/>
+  <rect x="30" y="90" width="260" height="18" fill="#EFF6FF"/>
+  <text x="46" y="95" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" font-weight="bold" fill="#1D4ED8">打包者（CLI / GUI）</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="46" y="138">pack：归档 → 加密 → 写头部</text>
+    <text x="46" y="162">产出 .secunzip（可分发）</text>
+    <text x="46" y="186">产出 .secret（管理密钥，不外发）</text>
+    <text x="46" y="210">向服务端登记该文件</text>
+    <text x="46" y="234">app_id = 产物的 MD5</text>
+  </g>
+
+  <!-- ===== 服务端 ===== -->
+  <rect x="420" y="70" width="260" height="230" rx="10" fill="#FFFFFF" stroke="#D1D5DB"/>
+  <rect x="420" y="70" width="260" height="38" rx="10" fill="#EFF6FF"/>
+  <rect x="420" y="90" width="260" height="18" fill="#EFF6FF"/>
+  <text x="436" y="95" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" font-weight="bold" fill="#1D4ED8">服务端（Axum + SQLite）</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="436" y="138">明文托管 content_key 与 secret</text>
+    <text x="436" y="162">表：apps / grants / requests</text>
+    <text x="436" y="186">　　　audit_logs</text>
+    <text x="436" y="210">登记、授权、吊销、审批</text>
+    <text x="436" y="234">/api/key 下发密钥</text>
+    <text x="436" y="258">GET /healthz 存活探针</text>
+  </g>
+  <text x="436" y="286" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="#B45309">唯一信任锚</text>
+
+  <!-- ===== 接收方 ===== -->
+  <rect x="810" y="70" width="260" height="230" rx="10" fill="#FFFFFF" stroke="#D1D5DB"/>
+  <rect x="810" y="70" width="260" height="38" rx="10" fill="#EFF6FF"/>
+  <rect x="810" y="90" width="260" height="18" fill="#EFF6FF"/>
+  <text x="826" y="95" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" font-weight="bold" fill="#1D4ED8">接收方（CLI / GUI）</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="826" y="138">计算产物 MD5 作为 app_id</text>
+    <text x="826" y="162">取密钥（须已被授权）</text>
+    <text x="826" y="186">内存解密为只读文件树</text>
+    <text x="826" y="210">回环 WebDAV → 映射盘符</text>
+    <text x="826" y="234">或 -o 解压到指定目录</text>
+  </g>
+
+  <!-- ===== 箭头：打包者 → 服务端 ===== -->
+  <line x1="292" y1="190" x2="410" y2="190" stroke="#2563EB" stroke-width="1.6"/>
+  <polygon points="420,190 410,184 410,196" fill="#2563EB"/>
+  <text x="355" y="180" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="#1D4ED8">register</text>
+
+  <!-- ===== 箭头：接收方 → 服务端（/api/key） ===== -->
+  <line x1="804" y1="232" x2="690" y2="232" stroke="#2563EB" stroke-width="1.6"/>
+  <polygon points="682,232 690,226 690,238" fill="#2563EB"/>
+  <text x="745" y="222" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="#1D4ED8">/api/key</text>
+
+  <!-- ===== 箭头：服务端 → 接收方（下发密钥） ===== -->
+  <line x1="684" y1="268" x2="802" y2="268" stroke="#2563EB" stroke-width="1.6"/>
+  <polygon points="810,268 802,262 802,274" fill="#2563EB"/>
+  <text x="745" y="288" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="#1D4ED8">已授权才下发</text>
+
+  <!-- ===== 分发路径：打包者 → 接收方 ===== -->
+  <polyline points="160,300 160,362 940,362 940,308" fill="none" stroke="#9CA3AF" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <polygon points="940,300 934,309 946,309" fill="#9CA3AF"/>
+  <text x="550" y="356" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="11.5" fill="#6B7280">分发 .secunzip（不含 .secret）</text>
+
+  <!-- ===== 关键事实 ===== -->
+  <rect x="30" y="395" width="1040" height="140" rx="10" fill="#F9FAFB" stroke="#E5E7EB"/>
+  <text x="46" y="422" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="13" font-weight="bold" fill="#111827">关键事实</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="46" y="448">content_key 从不写入产物：接收方必须联网、且已被授权，才能取得密钥</text>
+    <text x="46" y="470">打包者向服务端登记 app_id（产物 MD5）、secret（管理密钥）与 content_key</text>
+    <text x="46" y="492">服务端是唯一信任锚；被授权者取到密钥后可离线永久解密，revoke 只阻止今后的取钥</text>
+    <text x="46" y="514">接收方的机器码 / 系统日期 / IP / 用户名不参与打开流程（替代方案见设计文档 §9）</text>
+  </g>
+</svg>

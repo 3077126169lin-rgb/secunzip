@@ -30,6 +30,8 @@ GUI 与 CLI 都能产出，产物 runner 自查尾部标记后进入打开流程
 
 ## 3. 架构
 
+![系统与授权流程](images/architecture.svg)
+
 ### 3.1 组成
 
 - 服务端：授权管理、密钥下发、临时申请审批，SQLite 存储
@@ -40,6 +42,8 @@ GUI 与 CLI 都能产出，产物 runner 自查尾部标记后进入打开流程
 ```
 [文件头][加密数据]
 ```
+
+![产物格式](images/artifact-format.svg)
 
 文件头为明文，用 bincode 序列化 PackConfig，字段：magic、version、format、config、
 data_offset、data_size、original_size、integrity_hash。

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-label="SecUnzip 产物格式">
+  <title>SecUnzip 产物格式</title>
+  <rect width="1000" height="440" fill="#FFFFFF"/>
+
+  <text x="30" y="40" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="21" font-weight="bold" fill="#111827">.secunzip 产物格式</text>
+  <text x="30" y="60" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12" fill="#6B7280">头部为明文，其后为整段加密的数据</text>
+
+  <!-- 整体布局 -->
+  <rect x="60" y="78" width="580" height="58" rx="8" fill="#EFF6FF" stroke="#93C5FD"/>
+  <text x="350" y="114" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" font-weight="bold" fill="#1D4ED8">明文头部</text>
+
+  <rect x="640" y="78" width="300" height="58" rx="8" fill="#FEF3C7" stroke="#FCD34D"/>
+  <text x="790" y="114" text-anchor="middle" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" font-weight="bold" fill="#92400E">密文数据（整段加密）</text>
+
+  <!-- 头部字段明细 -->
+  <text x="60" y="175" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="13" font-weight="bold" fill="#111827">头部字段（依次排列）</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="60" y="201">magic · 8B　固定为 "SECUNZIP"</text>
+    <text x="60" y="224">version · 2B　格式版本</text>
+    <text x="60" y="247">format · 1B　输出格式（0 = EXE，1 = .secunzip）</text>
+    <text x="60" y="270">config_len · 4B　紧随其后的配置长度</text>
+    <text x="60" y="293">PackConfig　bincode 序列化的打包配置（算法、盐等）</text>
+    <text x="60" y="316">data_offset / data_size / original_size　各 8B</text>
+    <text x="60" y="339">hash_len · 4B + integrity_hash　明文的 SHA-256</text>
+  </g>
+
+  <!-- 不写入产物的东西 -->
+  <rect x="640" y="160" width="330" height="196" rx="10" fill="#F9FAFB" stroke="#E5E7EB"/>
+  <text x="658" y="186" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="13" font-weight="bold" fill="#B91C1C">不写入产物的东西</text>
+  <g font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    <text x="658" y="214">content_key</text>
+    <text x="658" y="234" font-size="11.5" fill="#6B7280">只由服务端托管，打开时联网获取</text>
+    <text x="658" y="264">接收方的机器码 / 日期 / IP / 用户名</text>
+    <text x="658" y="284" font-size="11.5" fill="#6B7280">打开流程根本不读这些值</text>
+    <text x="658" y="314">Remote 模式下的头部 key_derive</text>
+    <text x="658" y="334" font-size="11.5" fill="#6B7280">被清空为空字面量，因此 Remote 产物</text>
+    <text x="658" y="350" font-size="11.5" fill="#6B7280">无法离线打开，必须向服务端取密钥</text>
+  </g>
+
+  <!-- 说明 -->
+  <rect x="60" y="378" width="910" height="46" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+  <text x="76" y="406" font-family="'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="12.5" fill="#374151">
+    文件 ID 是对整个产物取 MD5（内容寻址），打开时由客户端重算，不由头部里的任何字段决定
+  </text>
+</svg>

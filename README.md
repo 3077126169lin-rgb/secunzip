@@ -16,6 +16,18 @@ secunzip grant docs.secunzip -u alice@example.com
 secunzip open  docs.secunzip -u alice@example.com
 ```
 
+## 架构
+
+![系统与授权流程](docs/images/architecture.svg)
+
+打包者把内容归档后整体加密，并把 `content_key` 登记到服务端；接收方打开时先算产物 MD5 作为文件 ID，
+联网取回密钥后才能解密，内容默认只在内存中以只读文件树呈现。**`content_key` 从不写入产物。**
+
+![产物格式](docs/images/artifact-format.svg)
+
+头部是明文，依次为魔数、版本、格式、配置长度、bincode 序列化的打包配置、三段长度与明文的 SHA-256
+完整性哈希；其后是整段加密的数据。文件 ID 是对整个产物取 MD5，不由头部任何字段决定。
+
 ## 实现状态
 
 核心链路是完整且经过端到端验证的：打包 → 归档加密 → 服务端登记与授权 → 接收方联网取密钥 →
