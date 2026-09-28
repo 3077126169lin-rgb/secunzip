@@ -208,7 +208,10 @@ impl RuntimeLoader {
         Ok(())
     }
 
-    /// 沙箱模式执行（内存）
+    /// EXE 黑盒执行
+    ///
+    /// 当前实现是先把文件解到临时目录，再用资源管理器打开该目录，**不是内存执行**；
+    /// 真正的内存执行在 feature 门控的 `runpe` 模块里，默认不编译。
     fn execute_sandbox(&self, files: &[(String, Vec<u8>)]) -> Result<()> {
         // TODO: 根据文件类型选择执行方式
         // - .exe: RunPE / 进程镂空

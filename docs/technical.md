@@ -54,7 +54,9 @@
 |------|---------|------|
 | 内存解压 / 只读浏览（默认） | [src/runtime/loader.rs](../src/runtime/loader.rs)、[src/runtime/vfs.rs](../src/runtime/vfs.rs) | 不落盘；虚拟文件系统列举与读取 |
 | 解压到磁盘（可选） | [src/cli/commands.rs](../src/cli/commands.rs) `cmd_open -o` | 显式指定输出目录时才落盘 |
-| WebDAV 挂载 | [src/runtime/mount.rs](../src/runtime/mount.rs) | Windows 走盘符挂载分支，非 Windows 走另一分支（有 `#[cfg(not(windows))]`） |
+| 运行模式 `RunMode` | [src/core/types.rs](../src/core/types.rs) | 随 `PackConfig` 用 bincode 写入产物头部；**当前版本不读取、不分支**（打开行为与它无关），三个变体仅为保持头部编码稳定，`Document` 无任何引用 |
+| 只读 WebDAV 挂载 | [src/runtime/mount.rs](../src/runtime/mount.rs) | 把内存 VirtualFS 在 `127.0.0.1` 随机端口以只读 WebDAV 服务出来；Windows 用系统自带 WebClient（`net use`）映射为盘符，非 Windows 只启动服务（`#[cfg(not(windows))]`） |
+| 不用真实 ISO 挂载 | 取舍 | `Mount-DiskImage` 只能挂载磁盘上已存在的镜像文件，用它必须先写明文到磁盘，与不落盘冲突；真正的内存盘需 WinFsp / Dokan 等文件系统驱动，超出零第三方运行时范围。故改用回环 WebDAV |
 | 自解压 EXE 运行 | [src/runtime/selfextract.rs](../src/runtime/selfextract.rs) | 识别尾部标记并解出内嵌 `.secunzip` |
 | 内存 EXE 执行（RunPE） | [src/runtime/runpe.rs](../src/runtime/runpe.rs) | 进程挖坑；**feature 门控，默认不编译** |
 | 手动打开/定位文件 | [src/runtime/loader.rs](../src/runtime/loader.rs)、[src/runtime/executor.rs](../src/runtime/executor.rs) | Windows 调 `explorer`，Linux 调 `xdg-open` |
@@ -74,7 +76,7 @@
 
 | 方案 | 实现位置 | 说明 |
 |------|---------|------|
-| Axum 0.7 + tokio | [server/src/main.rs](../server/src/main.rs) | 单文件服务端，9 个 POST 接口 + `GET /` 存活探测 |
+| Axum 0.7 + tokio | [server/src/main.rs](../server/src/main.rs) | 单文件服务端，9 个 POST 接口 + `GET /healthz` 存活探针；未注册 `GET /`，客户端探测根路径时收到的是 Axum 的 404 |
 | SQLite（**bundled**） | [server/Cargo.toml](../server/Cargo.toml) | sqlx 的 `sqlite` 特性开启 `libsqlite3-sys/bundled` → SQLite 源码编译进二进制，**不依赖系统 libsqlite3** |
 | 表结构 | [server/src/main.rs](../server/src/main.rs) `MIGRATIONS` | `apps`、`grants`、`requests`、`audit_logs` |
 | 索引 | [server/src/main.rs](../server/src/main.rs) `MIGRATIONS` | `idx_requests_app_status`、`idx_audit_app`（除主键外的二级索引） |

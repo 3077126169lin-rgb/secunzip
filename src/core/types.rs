@@ -106,14 +106,20 @@ pub enum Condition {
     AlwaysFalse,
 }
 
-/// 运行模式
+/// 运行模式（预留）
+///
+/// 该值随 `PackConfig` 用 bincode 写入产物头部，但当前版本不读取它：
+/// 打包与打开都没有任何分支依赖，`RunMode::Document` 在代码中无引用。
+/// 打开产物始终只有一条路径 —— 解密为内存只读文件树供浏览，
+/// 需要落盘时由用户显式指定输出目录解压，与头部记录的模式无关。
+/// 三个变体仅为保持头部编码稳定而保留；新增变体只能追加在末尾。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RunMode {
-    /// 沙箱模式：内存解密执行（仅EXE格式）
+    /// 预留：语义未实现，当前不生效
     Sandbox,
-    /// 文档模式：ISO挂载（仅EXE格式）
+    /// 预留：语义未实现，当前不生效
     Document,
-    /// 落盘模式：解压到临时目录/用户选择目录
+    /// 预留：语义未实现，当前不生效
     TempDir,
 }
 
@@ -139,7 +145,7 @@ pub struct PackConfig {
     pub hash: HashAlgo,
     /// 密钥派生规则
     pub key_derive: KeyNode,
-    /// 运行模式
+    /// 运行模式（预留；仅写入头部，当前不参与任何分支）
     pub run_mode: RunMode,
     /// 认证模式
     pub auth_mode: AuthMode,
