@@ -3,7 +3,7 @@ use crate::app::{human_size, short_id, SecUnzipApp};
 use crate::model::{Action, Mode, OpenTab, PackedEntry};
 use crate::theme;
 use eframe::egui;
-use secunzip::runtime::{mount_vfs_to_drive, unmount as unmount_drive, VirtualFS};
+use secunzip::runtime::{mount_vfs_to_drive, pick_free_drive, unmount as unmount_drive, VirtualFS};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -399,19 +399,37 @@ impl SecUnzipApp {
                 if self.mount_handle.is_some() {
                     if ui.button("卸载资源管理器盘").clicked() {
                         if let Some(h) = self.mount_handle.take() {
+                            let mapped = h.is_mapped();
                             unmount_drive(h);
-                            self.show_status("已卸载资源管理器挂载", false);
+                            let msg = if mapped {
+                                "已卸载资源管理器挂载"
+                            } else {
+                                "已停止 WebDAV 服务（此前未建立盘符映射）"
+                            };
+                            self.show_status(msg, false);
                         }
                     }
-                } else if ui.button("挂载到资源管理器(Z:)").clicked() {
+                } else if ui.button("挂载到资源管理器").clicked() {
                     if let Some(vfs) = self.vfs.clone() {
-                        match mount_vfs_to_drive(vfs, "Z:") {
+                        // 盘符不写死：按系统实际占用情况选一个空闲盘符，
+                        // 没有空闲盘符时只启动 WebDAV 服务并如实报错。
+                        let drive = pick_free_drive();
+                        match mount_vfs_to_drive(vfs, drive.as_deref()) {
                             Ok(h) => {
+                                let letter = h.drive().to_string();
                                 let url = h.url();
                                 self.mount_handle = Some(h);
-                                self.show_status(&format!("已挂载到 Z:（WebDAV {}）。若资源管理器未出现，可手动「映射网络驱动器」填 {}", url, url), false);
+                                self.show_status(&format!("已挂载到 {}（WebDAV {}）。若资源管理器未出现，可手动「映射网络驱动器」填 {}", letter, url, url), false);
                             }
-                            Err(e) => self.show_status(&format!("挂载服务启动失败: {}", e), true),
+                            Err(e) => {
+                                // 服务可能仍在运行，保留句柄以便「卸载」能停掉它；
+                                // 失败时 unmount 不会删除任何盘符映射。
+                                let msg = e.to_string();
+                                if let Some(h) = e.into_handle() {
+                                    self.mount_handle = Some(h);
+                                }
+                                self.show_status(&msg, true);
+                            }
                         }
                     }
                 }

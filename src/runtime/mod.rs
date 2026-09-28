@@ -11,6 +11,6 @@ pub mod runpe;
 pub use runpe::run_pe_memory;
 
 pub use loader::RuntimeLoader;
-pub use mount::{mount_vfs_to_drive, unmount, MountHandle};
+pub use mount::{mount_vfs_to_drive, pick_free_drive, unmount, MountError, MountHandle};
 pub use selfextract::{detect_self_extract, embedded_secunzip};
 pub use vfs::VirtualFS;

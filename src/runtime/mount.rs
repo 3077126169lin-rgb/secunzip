@@ -4,9 +4,29 @@
 //! 再用 Windows 自带的 WebClient（`net use`）映射成资源管理器里的驱动器。
 //! 全程内存、只读、不落盘，卸载即释放，防止复制扩散。
 //!
+//! 为什么不用真正的 ISO 挂载：
+//! 一是 Windows 的 `Mount-DiskImage` 只能挂载磁盘上已存在的镜像文件，要用它就得先把解密后的
+//! 明文写到磁盘，与「明文不落盘」直接冲突；二是真正的内存盘挂载需要 WinFsp / Dokan 之类的
+//! 文件系统驱动或签名内核驱动，超出本项目「零第三方运行时」的依赖范围。
+//! 回环 WebDAV 只需系统自带的 WebClient 组件，因此成为实际采用的方式。
+//!
+//! 盘符不写死：`pick_free_drive` 用 `GetLogicalDrives` 枚举系统实际占用的盘符，
+//! 从 `Z:` 向下取第一个空闲者（排除 A:/B: 与系统盘），避免与用户已有的
+//! 网络共享、U 盘或 VHD 撞车。
+//!
 //! 说明：Windows 自带的 WebDAV 迷你重定向器对匿名/HTTP 偶有挑剔，
-//! 故 `mount_vfs_to_drive` 在 `net use` 失败时仍返回服务句柄，
-//! 调用方可用返回的 URL 手动「映射网络驱动器」。
+//! 故 `net use` 失败时 WebDAV 服务仍会继续运行，调用方可用返回的 URL
+//! 手动「映射网络驱动器」。但失败不会被当成成功：返回类型为
+//! `Result<MountHandle, MountError>`：
+//! - `Ok(handle)`：服务在跑且本次映射成功，`handle.is_mapped()` 为 true；
+//! - `Err(MountError::MapFailed { handle, message })`：服务仍在跑，但映射失败
+//!   （或本机无空闲盘符）。`message` 是含 WebDAV URL 的中文提示，调用方应保留
+//!   `handle`（用于停止服务）并提示用户手动映射；
+//! - `Err(MountError::Service(..))`：服务没起来，没有句柄。
+//!
+//! 安全约束：`MountHandle` 记录映射是否由本程序建立，`unmount` 只在
+//! `is_mapped()` 为 true 时才执行 `net use <盘符> /delete /y`，
+//! 绝不会删除用户自己已有的盘符映射。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -23,6 +43,8 @@ pub struct MountHandle {
     stop: Arc<AtomicBool>,
     port: u16,
     drive: String,
+    /// 本次映射是否由本程序建立；卸载时据此决定是否删除盘符
+    mapped: bool,
     server: Option<JoinHandle<()>>,
 }
 
@@ -30,14 +52,63 @@ impl MountHandle {
     pub fn port(&self) -> u16 {
         self.port
     }
+    /// 请求映射的盘符（形如 `Z:`）；无空闲盘符时为空串
     pub fn drive(&self) -> &str {
         &self.drive
+    }
+    /// 本次挂载是否真的建立了驱动器映射
+    pub fn is_mapped(&self) -> bool {
+        self.mapped
     }
     /// 本机 WebDAV 地址（可手动「映射网络驱动器」）
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}/", self.port)
     }
 }
+
+/// 挂载失败：区分「服务没起来」与「服务在跑但映射失败」
+pub enum MountError {
+    /// WebDAV 服务无法启动，未建立任何映射
+    Service(String),
+    /// WebDAV 服务在运行，但驱动器映射失败（含无空闲盘符）；
+    /// `handle` 仍需交回调用方，用于停止服务与展示 URL
+    MapFailed {
+        handle: MountHandle,
+        message: String,
+    },
+}
+
+impl MountError {
+    /// 失败时仍存活的服务句柄（仅映射失败时存在）
+    pub fn into_handle(self) -> Option<MountHandle> {
+        match self {
+            MountError::MapFailed { handle, .. } => Some(handle),
+            MountError::Service(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountError::Service(m) => write!(f, "WebDAV 服务启动失败: {}", m),
+            MountError::MapFailed { message, .. } => write!(f, "{}", message),
+        }
+    }
+}
+
+impl std::fmt::Debug for MountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MountError::Service(m) => write!(f, "MountError::Service({})", m),
+            MountError::MapFailed { message, .. } => {
+                write!(f, "MountError::MapFailed({})", message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for MountError {}
 
 impl Drop for MountHandle {
     fn drop(&mut self) {
@@ -75,42 +146,150 @@ fn start_webdav(vfs: Arc<VirtualFS>) -> Result<(u16, Arc<AtomicBool>, JoinHandle
     Ok((port, stop, handle))
 }
 
-/// 把 VirtualFS 挂载为资源管理器里的驱动器（内存只读）
+// ===== 盘符选择 =====
+
 #[cfg(windows)]
-pub fn mount_vfs_to_drive(vfs: Arc<VirtualFS>, drive: &str) -> Result<MountHandle> {
-    let (port, stop, server) = start_webdav(vfs)?;
+extern "system" {
+    /// kernel32：返回盘符占用位图，bit0=A: … bit25=Z:
+    fn GetLogicalDrives() -> u32;
+}
+
+/// 从位图里挑第一个空闲盘符：从 Z: 向下找，排除 A:/B: 与系统盘
+fn pick_free_from_mask(mask: u32, system: Option<u8>) -> Option<String> {
+    for letter in (2u8..=25).rev() {
+        if Some(letter) == system {
+            continue;
+        }
+        if mask & (1u32 << letter) == 0 {
+            return Some(format!("{}:", (b'A' + letter) as char));
+        }
+    }
+    None
+}
+
+/// 系统盘盘符（0=A … 25=Z），取自 `SystemDrive` 环境变量
+fn system_drive_index() -> Option<u8> {
+    let v = std::env::var("SystemDrive").ok()?;
+    let b = v.trim().as_bytes().first().copied()?;
+    let up = b.to_ascii_uppercase();
+    if up.is_ascii_uppercase() {
+        Some(up - b'A')
+    } else {
+        None
+    }
+}
+
+/// 选一个本机空闲盘符（形如 `Z:`），无可用盘符返回 None。
+///
+/// 依据 `GetLogicalDrives` 报告的占用位图，而非 `Path::exists()`：
+/// 已断开但仍占着盘符的网络映射同样会出现在位图里，用文件系统探测会漏判。
+/// 排除 A:/B:（软驱）与系统盘，从 `Z:` 向下找。
+#[cfg(windows)]
+pub fn pick_free_drive() -> Option<String> {
+    let mask = unsafe { GetLogicalDrives() };
+    pick_free_from_mask(mask, system_drive_index())
+}
+
+/// 非 Windows 没有盘符概念
+#[cfg(not(windows))]
+pub fn pick_free_drive() -> Option<String> {
+    None
+}
+
+/// 形如 `Z:` 的单字母盘符
+fn is_drive_letter(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+/// 执行 `net use` 映射；失败返回中文原因（含 URL）
+#[cfg(windows)]
+fn map_drive(drive: &str, url: &str) -> std::result::Result<(), String> {
+    let out = std::process::Command::new("net")
+        .args(["use", drive, url, "/user:guest", "guest", "/persistent:no"])
+        .output()
+        .map_err(|e| format!("无法执行 net 命令（{} -> {}）: {}", drive, url, e))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let out_text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let detail = if err.is_empty() { out_text } else { err };
+    Err(format!("映射驱动器 {} 失败（{}）: {}", drive, url, detail))
+}
+
+/// 把 VirtualFS 挂载为资源管理器里的驱动器（内存只读）
+///
+/// `drive` 为 `pick_free_drive()` 得到的盘符；传 None 表示本机无空闲盘符，
+/// 此时只启动 WebDAV 服务，并通过 `MountError::MapFailed` 返回 URL 与句柄。
+///
+/// 失败语义见模块文档：`net use` 失败不再当作成功，但服务继续运行，
+/// 句柄随错误一并返回，调用方须保留它以便停止服务。
+#[cfg(windows)]
+pub fn mount_vfs_to_drive(
+    vfs: Arc<VirtualFS>,
+    drive: Option<&str>,
+) -> std::result::Result<MountHandle, MountError> {
+    let (port, stop, server) = start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
     let url = format!("http://127.0.0.1:{}/", port);
-    // 用 Windows 自带 WebClient 映射为驱动器；/user 携带凭据以避免交互式提示。
-    let _ = std::process::Command::new("net")
-        .args(["use", drive, &url, "/user:guest", "guest", "/persistent:no"])
-        .output();
-    Ok(MountHandle {
+    let mut handle = MountHandle {
         stop,
         port,
-        drive: drive.to_string(),
+        drive: drive.unwrap_or("").to_string(),
+        mapped: false,
         server: Some(server),
-    })
+    };
+    let result = match drive {
+        Some(d) if is_drive_letter(d) => {
+            // 用 Windows 自带 WebClient 映射为驱动器；/user 携带凭据以避免交互式提示。
+            map_drive(d, &url)
+        }
+        _ => Err("本机没有可用的空闲盘符".to_string()),
+    };
+    match result {
+        Ok(()) => {
+            handle.mapped = true;
+            Ok(handle)
+        }
+        Err(why) => Err(MountError::MapFailed {
+            handle,
+            message: format!(
+                "{}。WebDAV 服务仍在运行，可手动「映射网络驱动器」填 {}",
+                why, url
+            ),
+        }),
+    }
 }
 
 /// 非 Windows：仅启动 WebDAV 服务（无驱动器映射）
 #[cfg(not(windows))]
-pub fn mount_vfs_to_drive(vfs: Arc<VirtualFS>, drive: &str) -> Result<MountHandle> {
-    let (port, stop, server) = start_webdav(vfs)?;
+pub fn mount_vfs_to_drive(
+    vfs: Arc<VirtualFS>,
+    drive: Option<&str>,
+) -> std::result::Result<MountHandle, MountError> {
+    let (port, stop, server) = start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
     Ok(MountHandle {
         stop,
         port,
-        drive: drive.to_string(),
+        drive: drive.unwrap_or("").to_string(),
+        mapped: false,
         server: Some(server),
     })
 }
 
-/// 卸载：断开驱动器 + 停止服务
+/// 卸载：断开本程序建立的映射 + 停止服务
+///
+/// 只有 `mapped` 为 true 才会执行 `net use <盘符> /delete /y`：
+/// 映射不是本程序建的（失败、无盘符、非 Windows）时绝不碰盘符，
+/// 避免删掉用户自己已有的网络共享或 U 盘映射。
 pub fn unmount(h: MountHandle) {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("net")
-            .args(["use", h.drive(), "/delete", "/y"])
-            .output();
+        if h.mapped && is_drive_letter(&h.drive) {
+            let _ = std::process::Command::new("net")
+                .args(["use", &h.drive, "/delete", "/y"])
+                .output();
+        }
     }
     // 置停止位；Drop 里 join 线程
     drop(h);
@@ -369,5 +548,93 @@ mod tests {
         assert_eq!(normalize_path("/src/main.rs"), "src/main.rs");
         assert_eq!(normalize_path("/a%20b.txt"), "a b.txt");
         assert_eq!(normalize_path("/x?y=1"), "x");
+    }
+
+    /// 位图全满：没有任何空闲盘符
+    #[test]
+    fn pick_free_from_mask_all_used_is_none() {
+        assert_eq!(pick_free_from_mask(0x03FF_FFFF, None), None);
+    }
+
+    /// 只有 A:/B: 被占：仍应从 Z: 开始给
+    #[test]
+    fn pick_free_from_mask_ignores_floppy_letters() {
+        assert_eq!(pick_free_from_mask(0b11, None).as_deref(), Some("Z:"));
+    }
+
+    /// 从 Z: 向下找第一个空闲者
+    #[test]
+    fn pick_free_from_mask_searches_downward() {
+        // A..Y 全占，只剩 Z
+        assert_eq!(
+            pick_free_from_mask(0x01FF_FFFC, None).as_deref(),
+            Some("Z:")
+        );
+        // Z 也占了，退到 Y
+        assert_eq!(
+            pick_free_from_mask(0x02FF_FFFC, None).as_deref(),
+            Some("Y:")
+        );
+    }
+
+    /// 系统盘即使空闲也不返回
+    #[test]
+    fn pick_free_from_mask_never_returns_system_drive() {
+        // D..Z 全占，C 空闲但它是系统盘，故无可用盘符
+        assert_eq!(pick_free_from_mask(0x03FF_FFF8, Some(2)), None);
+        // 反过来：只有 C 空闲且非系统盘时才给 C
+        assert_eq!(
+            pick_free_from_mask(0x03FF_FFF8, None).as_deref(),
+            Some("C:")
+        );
+    }
+
+    #[test]
+    fn is_drive_letter_accepts_only_single_letter() {
+        assert!(is_drive_letter("Z:"));
+        assert!(is_drive_letter("c:"));
+        assert!(!is_drive_letter(""));
+        assert!(!is_drive_letter("Z"));
+        assert!(!is_drive_letter("ZZ:"));
+        assert!(!is_drive_letter("1:"));
+    }
+
+    /// 依赖本机盘符布局，但断言只要求「格式正确且不含禁用盘符」，
+    /// 因此任何机器上都不会误报。
+    #[test]
+    fn pick_free_drive_is_well_formed() {
+        match pick_free_drive() {
+            None => {}
+            Some(d) => {
+                assert_eq!(d.len(), 2, "盘符应为字母加冒号: {}", d);
+                let mut chars = d.chars();
+                let letter = chars.next().unwrap();
+                assert!(('C'..='Z').contains(&letter), "不应是 A:/B:: {}", d);
+                assert_eq!(chars.next(), Some(':'), "盘符应以冒号结尾: {}", d);
+                let sys = std::env::var("SystemDrive").unwrap_or_default();
+                let sys = sys.trim().to_ascii_uppercase();
+                assert_ne!(d.to_ascii_uppercase(), sys, "不应返回系统盘: {}", d);
+            }
+        }
+    }
+
+    /// 未建立映射的句柄卸载时不得触碰盘符：用非法盘符构造，
+    /// 即使守卫失效，`net use` 也只会无害失败，不会动真实映射。
+    #[test]
+    fn unmount_without_mapping_does_not_touch_drive() {
+        let h = MountHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            port: 0,
+            drive: "~~:".to_string(),
+            mapped: false,
+            server: None,
+        };
+        unmount(h);
+    }
+
+    #[test]
+    fn mount_error_service_has_no_handle() {
+        let e = MountError::Service("bind failed".to_string());
+        assert!(e.into_handle().is_none());
     }
 }
