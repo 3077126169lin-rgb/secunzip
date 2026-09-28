@@ -28,7 +28,7 @@ pub struct RequestInfo {
 /// 请求密钥（普通用户：需已授权）
 pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/key", server))
+    let resp = client.post(format!("{}/api/key", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
@@ -50,7 +50,7 @@ pub async fn request_key(server: &str, app_id: &str, user_id: &str) -> Result<St
 /// 管理员取密钥（凭 secret，免申请）
 pub async fn request_key_admin(server: &str, app_id: &str, secret: &str) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/key", server))
+    let resp = client.post(format!("{}/api/key", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -78,7 +78,7 @@ pub async fn request_access(
     message: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/request", server))
+    let resp = client.post(format!("{}/api/request", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
@@ -104,7 +104,7 @@ pub async fn grant_user(
     expires_at: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/grant", server))
+    let resp = client.post(format!("{}/api/grant", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -129,7 +129,7 @@ pub async fn revoke_user(
     user_id: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/revoke", server))
+    let resp = client.post(format!("{}/api/revoke", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -148,7 +148,7 @@ pub async fn revoke_user(
 /// 获取待审批列表（需该文件的 secret；服务端按 app_id 过滤）
 pub async fn list_requests(server: &str, app_id: &str, secret: &str) -> Result<Vec<RequestInfo>, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/requests", server))
+    let resp = client.post(format!("{}/api/requests", server))
         .json(&serde_json::json!({ "app_id": app_id, "secret": secret }))
         .send()
         .await
@@ -173,7 +173,7 @@ pub async fn approve_request(
     expires_at: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/approve", server))
+    let resp = client.post(format!("{}/api/approve", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -198,7 +198,7 @@ pub async fn deny_request(
     user_id: &str,
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/deny", server))
+    let resp = client.post(format!("{}/api/deny", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,

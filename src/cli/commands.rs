@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::core::{PackConfig, KeyNode, KeySource, RunMode, AuthMode, OutputFormat, CompressAlgo, CryptoAlgo, HashAlgo};
 use crate::packer::PackBuilder;
 use crate::runtime::RuntimeLoader;
@@ -74,11 +74,11 @@ pub fn pack_file(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_t
 pub fn cmd_pack(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_temp: bool) -> Result<()> {
     let out = pack_file(sources, output.clone(), server.clone(), allow_temp, None, false)?;
 
-    println!("");
+    println!();
     println!("═══════════════════════════════════════════════════════════");
     println!("打包完成: {}", output.display());
     println!("═══════════════════════════════════════════════════════════");
-    println!("");
+    println!();
     println!("管理信息（请妥善保管）:");
     println!("文件ID:    {}  (打包文件的 MD5)", out.app_id);
     println!("管理密钥:  {}", out.secret);
@@ -89,13 +89,13 @@ pub fn cmd_pack(sources: Vec<PathBuf>, output: PathBuf, server: String, allow_te
     if allow_temp {
         println!("临时申请:   已开启");
     }
-    println!("");
+    println!();
     println!("授权用户:");
     println!("secunzip grant {} --user <用户ID> [--expires 7d]", output.display());
-    println!("");
+    println!();
     println!("用户申请:");
     println!("secunzip request {} --user <用户ID> --days 3", output.display());
-    println!("");
+    println!();
     println!("查看申请:");
     println!("secunzip requests {}", output.display());
     println!("═══════════════════════════════════════════════════════════");
@@ -144,7 +144,7 @@ pub fn cmd_open(file: PathBuf, user: String, output: Option<PathBuf>) -> Result<
                         None => {
                             // 无输出：内存挂载，只读浏览（不落盘）
                             let vfs = loader.mount_vfs_with_key(&key)?;
-                            println!("");
+                            println!();
                             println!("═══════════════════════════════════════════════════════════");
                             println!("内存挂载（只读，未落盘）  文件数: {}  大小: {}", vfs.file_count(), human_size(vfs.total_size()));
                             println!("═══════════════════════════════════════════════════════════");
@@ -268,7 +268,7 @@ pub fn cmd_requests(file: PathBuf) -> Result<()> {
                 println!("没有待审批的申请");
             } else {
                 println!("待审批列表:");
-                println!("");
+                println!();
                 for r in requests {
                     println!("用户: {}", r.user_id);
                     if let Some(days) = r.need_days {
@@ -331,7 +331,7 @@ pub fn cmd_deny(file: PathBuf, user: String) -> Result<()> {
 
 async fn register_app(server: &str, app_id: &str, secret: &str, content_key: &str, allow_temp: bool) -> std::result::Result<(), String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/register", server))
+    let resp = client.post(format!("{}/api/register", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -350,7 +350,7 @@ async fn register_app(server: &str, app_id: &str, secret: &str, content_key: &st
 
 async fn request_key(server: &str, app_id: &str, user_id: &str) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/key", server))
+    let resp = client.post(format!("{}/api/key", server))
         .json(&serde_json::json!({ "app_id": app_id, "user_id": user_id }))
         .send().await.map_err(|e| format!("网络错误: {}", e))?;
 
@@ -365,7 +365,7 @@ async fn request_key(server: &str, app_id: &str, user_id: &str) -> std::result::
 
 async fn grant_user(server: &str, app_id: &str, secret: &str, user_id: &str, expires_at: Option<&str>) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/grant", server))
+    let resp = client.post(format!("{}/api/grant", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -380,7 +380,7 @@ async fn grant_user(server: &str, app_id: &str, secret: &str, user_id: &str, exp
 
 async fn revoke_user(server: &str, app_id: &str, secret: &str, user_id: &str) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/revoke", server))
+    let resp = client.post(format!("{}/api/revoke", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -394,7 +394,7 @@ async fn revoke_user(server: &str, app_id: &str, secret: &str, user_id: &str) ->
 
 async fn request_access(server: &str, app_id: &str, user_id: &str, need_days: Option<i32>, message: Option<String>) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/request", server))
+    let resp = client.post(format!("{}/api/request", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "user_id": user_id,
@@ -417,7 +417,7 @@ struct RequestInfo {
 
 async fn list_requests(server: &str, app_id: &str, secret: &str) -> std::result::Result<Vec<RequestInfo>, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/requests", server))
+    let resp = client.post(format!("{}/api/requests", server))
         .json(&serde_json::json!({ "app_id": app_id, "secret": secret }))
         .send().await.map_err(|e| format!("网络错误: {}", e))?;
 
@@ -434,7 +434,7 @@ async fn list_requests(server: &str, app_id: &str, secret: &str) -> std::result:
 
 async fn approve_request(server: &str, app_id: &str, secret: &str, user_id: &str, expires_at: Option<&str>) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/approve", server))
+    let resp = client.post(format!("{}/api/approve", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -449,7 +449,7 @@ async fn approve_request(server: &str, app_id: &str, secret: &str, user_id: &str
 
 async fn deny_request(server: &str, app_id: &str, secret: &str, user_id: &str) -> std::result::Result<String, String> {
     let client = reqwest::Client::new();
-    let resp = client.post(&format!("{}/api/deny", server))
+    let resp = client.post(format!("{}/api/deny", server))
         .json(&serde_json::json!({
             "app_id": app_id,
             "secret": secret,
@@ -464,7 +464,7 @@ async fn deny_request(server: &str, app_id: &str, secret: &str, user_id: &str) -
 // ===== 工具函数 =====
 
 /// 保存 secret 到本地文件
-fn save_secret(output: &PathBuf, secret: &str) -> Result<()> {
+fn save_secret(output: &Path, secret: &str) -> Result<()> {
     let secret_path = output.with_extension("secret");
     std::fs::write(&secret_path, secret)?;
     println!("管理密钥已保存: {}", secret_path.display());
@@ -472,12 +472,12 @@ fn save_secret(output: &PathBuf, secret: &str) -> Result<()> {
 }
 
 /// 文件 ID = 文件内容的 MD5（内容寻址）
-fn get_app_id(file: &PathBuf) -> Result<String> {
+fn get_app_id(file: &Path) -> Result<String> {
     crate::crypto::file_md5_hex(file)
 }
 
 /// 从本地文件读取 secret
-fn get_secret(file: &PathBuf) -> Result<String> {
+fn get_secret(file: &Path) -> Result<String> {
     let secret_path = file.with_extension("secret");
     if secret_path.exists() {
         Ok(std::fs::read_to_string(secret_path)?.trim().to_string())
@@ -491,7 +491,7 @@ fn get_secret(file: &PathBuf) -> Result<String> {
 }
 
 /// 从文件头部读取 server 地址
-fn get_server(file: &PathBuf) -> Result<String> {
+fn get_server(file: &Path) -> Result<String> {
     let loader = crate::runtime::RuntimeLoader::from_file(file)?;
     let header = loader.header();
     

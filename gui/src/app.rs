@@ -234,7 +234,7 @@ impl SecUnzipApp {
                 self.pending_requests = requests;
                 self.show_status("已刷新", false);
             }
-            Err(e) => self.show_status(&format!("{}", e), true),
+            Err(e) => self.show_status(&e.to_string(), true),
         }
     }
 

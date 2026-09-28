@@ -28,10 +28,9 @@ impl SecUnzipApp {
             if ui.selectable_label(self.open_tab == OpenTab::Browse, "浏览").clicked() {
                 self.open_tab = OpenTab::Browse;
             }
-            if has_file && self.is_admin {
-                if ui.selectable_label(self.open_tab == OpenTab::Manage, "管理此文件").clicked() {
-                    self.open_tab = OpenTab::Manage;
-                }
+            if has_file && self.is_admin
+                && ui.selectable_label(self.open_tab == OpenTab::Manage, "管理此文件").clicked() {
+                self.open_tab = OpenTab::Manage;
             }
             if ui.selectable_label(self.open_tab == OpenTab::Mine, "我的文件").clicked() {
                 self.open_tab = OpenTab::Mine;
@@ -335,7 +334,7 @@ impl SecUnzipApp {
                 egui::ScrollArea::vertical().id_salt("preview").auto_shrink([false, false]).show(ui, |ui| {
                     match &self.preview_path {
                         Some(p) => {
-                            ui.label(egui::RichText::new(format!("{}", p)).size(13.0).color(theme::TEXT_DIM));
+                            ui.label(egui::RichText::new(p.to_string()).size(13.0).color(theme::TEXT_DIM));
                             ui.add_space(8.0);
                             if VirtualFS::is_text_file(p) {
                                 ui.add(egui::TextEdit::multiline(&mut self.preview_text.as_str()).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
@@ -396,7 +395,7 @@ impl SecUnzipApp {
                 } else if e.contains("授权") || e.contains("权限") || e.contains("未") {
                     format!("{} —— 可点「申请临时权限」向管理员申请访问", e)
                 } else {
-                    format!("{}", e)
+                    e.to_string()
                 };
                 self.show_status(&msg, true);
             }
@@ -415,7 +414,7 @@ impl SecUnzipApp {
         });
         match result {
             Ok(msg) => self.show_status(&format!("{} —— 等管理员审批通过后，再点「解密并打开」", msg), false),
-            Err(e) => self.show_status(&format!("{}", e), true),
+            Err(e) => self.show_status(&e.to_string(), true),
         }
     }
 

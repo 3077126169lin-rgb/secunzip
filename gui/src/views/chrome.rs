@@ -35,7 +35,7 @@ impl SecUnzipApp {
                         .rounding(egui::Rounding::same(18.0))
                         .inner_margin(egui::Margin::symmetric(12.0, 6.0))
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(format!("{}", self.user_id)).size(13.0).color(theme::TEXT_DIM));
+                            ui.label(egui::RichText::new(self.user_id.to_string()).size(13.0).color(theme::TEXT_DIM));
                         });
                 });
             });

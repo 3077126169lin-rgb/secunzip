@@ -58,7 +58,7 @@ impl SecUnzipApp {
                 for req in &self.pending_requests {
                     theme::card(ui, theme::CARD, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{}", req.user_id)).size(15.0).strong().color(theme::TEXT));
+                            ui.label(egui::RichText::new(req.user_id.to_string()).size(15.0).strong().color(theme::TEXT));
                             if let Some(days) = req.need_days {
                                 theme::badge(ui, &format!("需要{}天", days), theme::ACCENT);
                             }
@@ -91,8 +91,8 @@ impl SecUnzipApp {
                     }
                 });
                 match result {
-                    Ok(msg) => { self.show_status(&format!("{}", msg), false); self.refresh_requests(); }
-                    Err(e) => self.show_status(&format!("{}", e), true),
+                    Ok(msg) => { self.show_status(&msg.to_string(), false); self.refresh_requests(); }
+                    Err(e) => self.show_status(&e.to_string(), true),
                 }
             }
         }
@@ -109,8 +109,8 @@ impl SecUnzipApp {
             api::grant_user(&self.server_url, &self.app_id, &self.secret, &self.grant_user, exp).await
         });
         match result {
-            Ok(msg) => { self.show_status(&format!("{}", msg), false); self.grant_user.clear(); }
-            Err(e) => self.show_status(&format!("{}", e), true),
+            Ok(msg) => { self.show_status(&msg.to_string(), false); self.grant_user.clear(); }
+            Err(e) => self.show_status(&e.to_string(), true),
         }
     }
 
@@ -124,8 +124,8 @@ impl SecUnzipApp {
             api::revoke_user(&self.server_url, &self.app_id, &self.secret, &self.grant_user).await
         });
         match result {
-            Ok(msg) => { self.show_status(&format!("{}", msg), false); self.grant_user.clear(); }
-            Err(e) => self.show_status(&format!("{}", e), true),
+            Ok(msg) => { self.show_status(&msg.to_string(), false); self.grant_user.clear(); }
+            Err(e) => self.show_status(&e.to_string(), true),
         }
     }
 

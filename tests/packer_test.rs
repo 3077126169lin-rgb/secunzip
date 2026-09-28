@@ -182,5 +182,5 @@ fn test_info_command() {
     assert_eq!(header.config.expire_at, Some("20261231".into()));
     assert_eq!(header.config.ip_whitelist, vec!["192.168.1.0/24"]);
     assert_eq!(header.config.app_id, Some("test-app-id".into()));
-    assert_eq!(header.config.allow_temp, true);
+    assert!(header.config.allow_temp);
 }

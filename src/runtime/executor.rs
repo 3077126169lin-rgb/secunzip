@@ -145,7 +145,7 @@ impl Executor {
         for (name, data) in files {
             println!("{} ({} KB)", name, data.len() / 1024);
         }
-        println!("");
+        println!();
         println!("纯内存模式：文件不会写入磁盘");
         println!("按 Enter 退出...");
         wait_for_input();

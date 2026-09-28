@@ -300,7 +300,6 @@ fn push_response(xml: &mut String, href: &str, name: &str, is_file: bool, size: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     fn sample_vfs() -> Arc<VirtualFS> {
         Arc::new(VirtualFS::from_files(vec![
