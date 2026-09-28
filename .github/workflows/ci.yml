@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上新的推送会取消尚未结束的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: 格式与静态检查
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 三个 crate 是彼此独立的 Cargo 工程，逐个检查
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy（核心库与 CLI）
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: clippy（服务端）
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: server
+
+      - name: clippy（图形客户端）
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: gui
+
+  test:
+    name: 测试
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 核心库与 CLI
+        run: cargo test
+
+      # 服务端测试会真实拉起 secunzip-server 进程并打 HTTP 接口
+      - name: 服务端
+        run: cargo test
+        working-directory: server
+
+      - name: 图形客户端可编译
+        run: cargo build --release
+        working-directory: gui
