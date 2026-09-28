@@ -113,14 +113,69 @@ pub fn ip_in_cidr(ip: &str, cidr: &str) -> Result<bool> {
         .map_err(|_| crate::SecUnzipError::KeyDerivation(format!("无效前缀长度: {}", parts[1])))?;
 
     if prefix > 32 {
-        return Err(crate::SecUnzipError::KeyDerivation(
-            "前缀长度必须 <= 32".into(),
-        ));
+        return Err(crate::SecUnzipError::KeyDerivation(format!(
+            "无效前缀长度: {}（必须 <= 32）",
+            prefix
+        )));
     }
 
-    let mask = !((1u32 << (32 - prefix)) - 1);
+    // prefix == 0 表示匹配全部 IPv4：此时不能写 `1u32 << 32`（debug 下 panic，
+    // release 下移位计数按模 32 取，语义错误）。prefix 在 1..=32 时 `32 - prefix`
+    // 最大为 31，移位安全。
+    let mask: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
     let ip_u32 = u32::from(ip);
     let network_u32 = u32::from(network);
 
     Ok((ip_u32 & mask) == (network_u32 & mask))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ip_in_cidr;
+
+    #[test]
+    fn test_ip_in_cidr_prefix_zero_matches_all() {
+        // prefix 0 曾经触发 `1u32 << 32` 溢出：debug 构建直接 panic，
+        // release 构建按模 32 得到错误掩码。此用例正是为了覆盖该路径。
+        assert!(ip_in_cidr("8.8.8.8", "0.0.0.0/0").unwrap());
+        assert!(ip_in_cidr("192.168.1.1", "0.0.0.0/0").unwrap());
+        assert!(ip_in_cidr("255.255.255.255", "10.0.0.0/0").unwrap());
+    }
+
+    #[test]
+    fn test_ip_in_cidr_prefix_32_is_exact_host() {
+        assert!(ip_in_cidr("203.0.113.7", "203.0.113.7/32").unwrap());
+        assert!(!ip_in_cidr("203.0.113.8", "203.0.113.7/32").unwrap());
+    }
+
+    #[test]
+    fn test_ip_in_cidr_middle_prefix() {
+        // /24 掩码
+        assert!(ip_in_cidr("192.168.1.255", "192.168.1.0/24").unwrap());
+        assert!(!ip_in_cidr("192.168.2.1", "192.168.1.0/24").unwrap());
+        // /8 掩码
+        assert!(ip_in_cidr("10.255.1.2", "10.0.0.0/8").unwrap());
+        assert!(!ip_in_cidr("11.0.0.1", "10.0.0.0/8").unwrap());
+        // /31 边界
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0/31").unwrap());
+        assert!(!ip_in_cidr("10.0.0.2", "10.0.0.0/31").unwrap());
+    }
+
+    #[test]
+    fn test_ip_in_cidr_rejects_bad_input() {
+        // 前缀越界
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0/33").is_err());
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0/999").is_err());
+        // 非法 IP
+        assert!(ip_in_cidr("not-an-ip", "10.0.0.0/8").is_err());
+        assert!(ip_in_cidr("10.0.0.1", "not-a-net/8").is_err());
+        // 畸形 CIDR
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0").is_err());
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0/8/9").is_err());
+        assert!(ip_in_cidr("10.0.0.1", "10.0.0.0/").is_err());
+    }
 }
