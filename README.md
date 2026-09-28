@@ -111,6 +111,7 @@ secunzip open  docs.secunzip -u alice@example.com
 | [deploy/install-windows.ps1](deploy/install-windows.ps1)、[deploy/install-linux.sh](deploy/install-linux.sh) | 一键部署，并生成服务化脚本（NSSM / systemd） |
 | [docs/design.md](docs/design.md) | 设计文档 |
 | [docs/technical.md](docs/technical.md) | 技术方案清单 |
+| [docs/demo.md](docs/demo.md) | 演示脚本：可照着跑的完整流程与答辩要点 |
 
 ## 构建
 
@@ -243,6 +244,7 @@ cd server && cargo test
 
 ## 文档
 
+- [docs/demo.md](docs/demo.md) — 演示脚本：照着敲就能跑通的完整流程（含实际输出）
 - [API.md](API.md) — 服务端接口
 - [TESTING.md](TESTING.md) — 测试范围与手工验证
 - [docs/design.md](docs/design.md) — 设计：架构、产物格式、安全边界

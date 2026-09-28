@@ -34,6 +34,8 @@ cd gui    && cargo build
 
 ## 手工验证
 
+完整的可照敲流程（含实际输出）见 [docs/demo.md](docs/demo.md)。最短版本：
+
 启动服务端后：
 
 ```
