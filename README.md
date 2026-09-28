@@ -1,5 +1,8 @@
 # secunzip
 
+> 学生项目，非安全产品。未做安全审计与渗透测试，服务端默认明文 HTTP。请仅在隔离的虚拟机或沙盒中试用，
+> 不要用于真实敏感数据，不要暴露到公网。已知风险逐条列在 [SECURITY.md](SECURITY.md)。
+
 受控内容分发工具。把文件打包成 `.secunzip`，接收方必须联网、且被授权，才能打开。
 
 内容先归档为 ZIP，再整体加密。加密密钥由服务端托管，打开时联网获取；默认在内存中解压浏览，不落盘。
@@ -10,6 +13,16 @@ secunzip grant docs.secunzip -u alice@example.com
 secunzip open  docs.secunzip -u alice@example.com
 ```
 
+## 界面
+
+![打包页](docs/images/pack.png)
+![打开文件](docs/images/open-file.png)
+
+![我的文件](docs/images/open-mine.png)
+![设置](docs/images/settings.png)
+
+四个页面的完整走查（含实际输出）见 [docs/demo.md](docs/demo.md)；界面取色与控件风格在 [gui/src/theme.rs](gui/src/theme.rs)，图标是 [gui/src/icons.rs](gui/src/icons.rs) 里手写的矢量绘制。
+
 ## 仓库结构
 
 | 路径 | 内容 |
@@ -19,7 +32,8 @@ secunzip open  docs.secunzip -u alice@example.com
 | [gui/](gui/) | 图形客户端（egui）：[theme.rs](gui/src/theme.rs) 设计系统、[icons.rs](gui/src/icons.rs) 手搓矢量图标、[model.rs](gui/src/model.rs) 状态与持久化、[monitor.rs](gui/src/monitor.rs) 后台监控、[views/](gui/src/views/) 各页面、[app.rs](gui/src/app.rs) 业务逻辑、[api.rs](gui/src/api.rs) HTTP 调用 |
 | [tests/](tests/) | 集成测试 |
 | [testdata/](testdata/) | 示例数据（测试当前自建临时文件，此目录未被引用） |
-| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md) |
+| [docs/](docs/) | [设计文档](docs/design.md)、[技术方案清单](docs/technical.md)、[演示脚本](docs/demo.md)、[发布与卸载](docs/release.md)，截图在 [docs/images/](docs/images/) |
+| [.github/](.github/) | [ci.yml](.github/workflows/ci.yml) 在提交与 PR 时跑格式检查、clippy 与测试；[release.yml](.github/workflows/release.yml) 打 tag 时产出并发布安装包 |
 | [deploy/](deploy/) | 部署脚本与 Docker，见 [deploy/README.md](deploy/README.md) |
 | [assets/](assets/) | 打包用的运行时占位资源 |
 | [installer.iss](installer.iss) | Inno Setup 安装包脚本 |
@@ -32,14 +46,25 @@ secunzip open  docs.secunzip -u alice@example.com
 |------|------|
 | [Cargo.toml](Cargo.toml) / [Cargo.lock](Cargo.lock) | 核心库与 CLI 的依赖清单与锁定版本；含发布构建优化（LTO、strip） |
 | [.gitignore](.gitignore) | 忽略构建产物（`target/`、`output/`）与运行时数据（`*.db`、`*.secret`） |
+| [.gitattributes](.gitattributes) | 换行符策略：仓库内存 LF，避免 `deploy/install-linux.sh` 被 Windows 提交成 CRLF |
+| [.editorconfig](.editorconfig) | 编辑器缩进与编码约定 |
+| [rustfmt.toml](rustfmt.toml) | rustfmt 配置，CI 用 `cargo fmt --check` 校验 |
 | [LICENSE](LICENSE) | MIT 许可证 |
+| [DISCLAIMER.txt](DISCLAIMER.txt) | 免责声明：学生项目、未做安全审计、建议沙盒试用；安装包首屏强制阅读 |
 | [README.md](README.md) | 本文件 |
 | [API.md](API.md) | 服务端 HTTP 接口参考 |
 | [TESTING.md](TESTING.md) | 测试范围、手工验证步骤与回归清单 |
+| [SECURITY.md](SECURITY.md) | 安全状态、信任模型与已知接受的风险 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 构建方式、测试要求与提交约定 |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 参与者行为准则（Contributor Covenant 2.1） |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 | [ATTRIBUTION.md](ATTRIBUTION.md) | 技术与第三方组件归属声明 |
 | [installer.iss](installer.iss) | Inno Setup 6 安装包脚本，产出 `SecUnzip-Setup.exe`（含卸载程序） |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | 提交与 PR 时跑 `cargo fmt --check`、`cargo clippy -D warnings` 与全部测试 |
 | [.github/workflows/release.yml](.github/workflows/release.yml) | 推 `v*` tag 时自动构建安装包并挂到 Release |
-| [build.rs](build.rs) | 把 `assets/icon.ico` 嵌入可执行文件（三个 crate 各一份，仅用工具链自带的 `windres`/`rc`） |
+| [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md) | PR 自查清单 |
+| [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/) | issue 表单：缺陷报告与功能建议 |
+| [build.rs](build.rs) | 把 `assets/icon.ico` 嵌入可执行文件（三个 crate 各一份）；`rc`/`windres` 不在 PATH 时回退到 Windows Kits 与 MSYS2 的默认安装位置 |
 
 **核心库与 CLI（`src/`）**
 
@@ -239,13 +264,13 @@ CLI 与 GUI 中含有 `#[cfg(not(windows))]` 分支，可编译到非 Windows �
 客户端为解密必然拿到密钥，因此**授权一次即可永久离线解密**；`revoke` 只阻止今后的取钥，
 无法追回已泄露的密钥。
 
-威胁模型与已知问题见 [docs/design.md](docs/design.md)。
+威胁模型与已知问题见 [SECURITY.md](SECURITY.md)，设计取舍见 [docs/design.md](docs/design.md)。
 
 ## 测试
 
 ```
-cargo test                # 48 个
-cd server && cargo test
+cargo test                      # 核心库与 CLI：48 个
+cd server && cargo test         # 服务端：21 个，真实拉起进程打 HTTP 接口
 ```
 
 见 [TESTING.md](TESTING.md)。
@@ -259,8 +284,13 @@ cd server && cargo test
 - [docs/design.md](docs/design.md) — 设计：架构、产物格式、安全边界
 - [docs/technical.md](docs/technical.md) — 技术方案清单（全部选型与实现方案）
 - [ATTRIBUTION.md](ATTRIBUTION.md) — 第三方归属
+- [SECURITY.md](SECURITY.md) — 安全状态与已知风险
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更
+- [CONTRIBUTING.md](CONTRIBUTING.md) — 构建、测试与提交约定
 - [deploy/README.md](deploy/README.md) — 服务端部署
 
 ## License
 
 [MIT](LICENSE)
+
+以 MIT 许可证发布，不提供任何形式的担保。这是学生项目，未做安全审计，请仅在沙盒环境试用，详见 [DISCLAIMER.txt](DISCLAIMER.txt)。
