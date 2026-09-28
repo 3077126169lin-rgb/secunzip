@@ -1,18 +1,5 @@
 use super::types::*;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-
-/// 项目配置文件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectConfig {
-    pub name: String,
-    pub version: String,
-    pub pack: PackConfig,
-    /// 源文件/目录列表
-    pub sources: Vec<PathBuf>,
-    /// 输出路径
-    pub output: PathBuf,
-}
 
 /// 打包产物头部结构
 ///
