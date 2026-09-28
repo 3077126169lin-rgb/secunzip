@@ -1,4 +1,3 @@
-pub mod executor;
 pub mod loader;
 pub mod mount;
 pub mod selfextract;
