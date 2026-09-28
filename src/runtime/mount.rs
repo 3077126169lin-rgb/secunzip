@@ -27,6 +27,41 @@
 //! 安全约束：`MountHandle` 记录映射是否由本程序建立，`unmount` 只在
 //! `is_mapped()` 为 true 时才执行 `net use <盘符> /delete /y`，
 //! 绝不会删除用户自己已有的盘符映射。
+//!
+//! # 访问控制（为什么 URL 里有 token、为什么要校验 Host）
+//!
+//! 这个服务没有账号体系（Windows WebClient 走匿名/HTTP 最省事），因此改为
+//! 两道「能力证明」：
+//!
+//! 1. **挂载期随机 token 前缀**：每次 `start_webdav` 都用操作系统 CSPRNG
+//!    （`rand::rngs::OsRng`）生成 16 字节随机数并 hex 编码成 32 个字符，
+//!    服务地址是 `http://127.0.0.1:<端口>/<token>/`，`MountHandle::url()` 返回带
+//!    token 的地址。凡是路径不以该 token 段开头的请求一律 403。
+//!    这样「端口被扫到」不再等于「明文被读到」——本机其它进程必须先拿到 token。
+//! 2. **Host 头校验**：只接受 `127.0.0.1:<本服务端口>` 与 `localhost:<本服务端口>`，
+//!    其余（含任意域名、其它端口的回环）一律 403。这条是**专门用来掐断 DNS
+//!    rebinding 的**：恶意网页把 attack.com 解析到 127.0.0.1 后，浏览器发出的请求
+//!    里 Host 仍是 `attack.com`，因此拿不到内容；而浏览器无法把 Host 伪造成
+//!    `127.0.0.1:<端口>` 再去读响应。
+//!
+//! token 比较采用逐字节异或累加（近似常数时间），避免按前缀逐位比较被计时侧信道
+//! 逐字符还原。请求解析另加：Content-Length 上限、socket 读超时（防 slowloris）、
+//! 显式拒绝 `..` 段与 NUL 字节。
+//!
+//! # 仍然防不住什么（如实说明）
+//!
+//! 本机制关闭的是「浏览器 / DNS rebinding 远程读取」与「随机端口扫描式顺手牵羊」
+//! 两条路，并**不是**一个完整的访问控制：
+//! - token 虽然是 CSPRNG 生成、不可预测，但它会**以明文形式出现在若干本机可见的
+//!   地方**：GUI 状态栏文字、`net use` 命令行（因而出现在进程列表、命令历史与
+//!   WebClient 日志里）、`MountHandle::url()` 的返回值。任何读到这些的本机进程
+//!   （或用户自己）都能完整读取明文。**改用 OsRng 不会消除这条**——token 一旦
+//!   被打印/传参就与生成方式无关了；
+//! - Windows 盘符映射一旦建立，资源管理器/任何能读该驱动器的进程都能读到内容，
+//!   直到 `unmount` 为止；这是「映射成盘」这一功能的固有代价；
+//! - 服务是明文 HTTP（回环），本机抓包可以直接拿到 token 与内容；
+//! - 能读取本进程内存（同用户调试器、注入、内存转储）的攻击者可以直接拿走明文
+//!   与 token，不在本模块的防御范围内。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -42,6 +77,8 @@ use crate::Result;
 pub struct MountHandle {
     stop: Arc<AtomicBool>,
     port: u16,
+    /// 本次挂载的访问 token（URL 前缀，见模块文档）
+    token: String,
     drive: String,
     /// 本次映射是否由本程序建立；卸载时据此决定是否删除盘符
     mapped: bool,
@@ -61,9 +98,17 @@ impl MountHandle {
         self.mapped
     }
     /// 本机 WebDAV 地址（可手动「映射网络驱动器」）
+    ///
+    /// 形如 `http://127.0.0.1:<端口>/<token>/`：token 必须留在 URL 里，
+    /// 否则服务会以 403 拒绝。
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/", self.port)
+        base_url(self.port, &self.token)
     }
+}
+
+/// 服务的根地址（含 token 前缀）
+fn base_url(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{}/{}/", port, token)
 }
 
 /// 挂载失败：区分「服务没起来」与「服务在跑但映射失败」
@@ -119,13 +164,45 @@ impl Drop for MountHandle {
     }
 }
 
+/// 读超时：防止 slowloris 客户端慢慢发请求、长期霸占一个线程。
+/// 本地回环正常请求在毫秒级完成，10 秒足够宽松，又不会让线程永久卡住。
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Content-Length 上限：本服务只读，不接受上传，超过 4 KiB 一律 413。
+const MAX_CONTENT_LENGTH: usize = 4 * 1024;
+
+/// 生成一次挂载用的随机 token（16 字节 → 32 个十六进制字符，128 位）。
+///
+/// token 是挂载期间**唯一的访问控制凭据**：只要它可预测，本机任何进程都能算出
+/// 它并读走全部明文。因此这里用操作系统的 CSPRNG（`rand::rngs::OsRng`，直接读
+/// 系统熵源），而不是时间/进程号/地址之类的「混合哈希」——那种做法只是把可猜测
+/// 的输入搅乱，输出仍不具备密码学不可预测性。
+fn random_token() -> String {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    use std::fmt::Write as _;
+
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    let mut token = String::with_capacity(32);
+    for b in bytes {
+        // 写入 String 不会失败（fmt::Write for String 不会返回 Err）
+        let _ = write!(token, "{:02x}", b);
+    }
+    token
+}
+
 /// 启动只读 WebDAV 服务（后台线程，随机回环端口）
-fn start_webdav(vfs: Arc<VirtualFS>) -> Result<(u16, Arc<AtomicBool>, JoinHandle<()>)> {
+///
+/// 返回 `(端口, token, 停止位, 线程句柄)`；token 是本次挂载的 URL 前缀。
+fn start_webdav(vfs: Arc<VirtualFS>) -> Result<(u16, String, Arc<AtomicBool>, JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let token = random_token();
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
+    let token2 = token.clone();
     let handle = std::thread::spawn(move || loop {
         if stop2.load(Ordering::SeqCst) {
             break;
@@ -133,8 +210,9 @@ fn start_webdav(vfs: Arc<VirtualFS>) -> Result<(u16, Arc<AtomicBool>, JoinHandle
         match listener.accept() {
             Ok((stream, _)) => {
                 let vfs = vfs.clone();
+                let token = token2.clone();
                 std::thread::spawn(move || {
-                    let _ = handle_conn(stream, &vfs);
+                    let _ = handle_conn(stream, &vfs, &token, port);
                 });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -143,7 +221,7 @@ fn start_webdav(vfs: Arc<VirtualFS>) -> Result<(u16, Arc<AtomicBool>, JoinHandle
             Err(_) => break,
         }
     });
-    Ok((port, stop, handle))
+    Ok((port, token, stop, handle))
 }
 
 // ===== 盘符选择 =====
@@ -230,11 +308,13 @@ pub fn mount_vfs_to_drive(
     vfs: Arc<VirtualFS>,
     drive: Option<&str>,
 ) -> std::result::Result<MountHandle, MountError> {
-    let (port, stop, server) = start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
-    let url = format!("http://127.0.0.1:{}/", port);
+    let (port, token, stop, server) =
+        start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
+    let url = base_url(port, &token);
     let mut handle = MountHandle {
         stop,
         port,
+        token,
         drive: drive.unwrap_or("").to_string(),
         mapped: false,
         server: Some(server),
@@ -267,10 +347,12 @@ pub fn mount_vfs_to_drive(
     vfs: Arc<VirtualFS>,
     drive: Option<&str>,
 ) -> std::result::Result<MountHandle, MountError> {
-    let (port, stop, server) = start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
+    let (port, token, stop, server) =
+        start_webdav(vfs).map_err(|e| MountError::Service(e.to_string()))?;
     Ok(MountHandle {
         stop,
         port,
+        token,
         drive: drive.unwrap_or("").to_string(),
         mapped: false,
         server: Some(server),
@@ -297,16 +379,28 @@ pub fn unmount(h: MountHandle) {
 
 // ===== WebDAV / HTTP 处理 =====
 
-fn handle_conn(stream: TcpStream, vfs: &VirtualFS) -> std::io::Result<()> {
+/// 处理一条连接。
+///
+/// 顺序很重要：先设读超时（防 slowloris），再解析请求行与头部，然后**先校验
+/// Host、再校验 token**，最后才碰 VFS。任何一步不通过都写一条短响应并断开。
+fn handle_conn(stream: TcpStream, vfs: &VirtualFS, token: &str, port: u16) -> std::io::Result<()> {
+    // 慢速客户端（slowloris）不能靠一个连接长期占住线程：读写都设上限。
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    if reader.read_line(&mut request_line)? == 0 {
+        // 连接被对端直接关闭，无需响应
+        return Ok(());
+    }
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let raw_path = parts.next().unwrap_or("/").to_string();
 
-    // 读头部到空行，取 Content-Length
+    // 读头部到空行，取 Host 与 Content-Length
     let mut content_length = 0usize;
+    let mut host: Option<String> = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -316,9 +410,26 @@ fn handle_conn(stream: TcpStream, vfs: &VirtualFS) -> std::io::Result<()> {
         if t.is_empty() {
             break;
         }
-        if let Some(v) = t.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = t.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = lower.strip_prefix("host:") {
+            host = Some(v.trim().to_string());
         }
+    }
+
+    let mut out = stream;
+
+    // (1) Host 校验：这是防 DNS rebinding 的关键一步。
+    // 只认本机回环名 + 本服务端口，别的（攻击者域名、别的回环端口）一律 403。
+    if !host_is_allowed(host.as_deref(), port) {
+        return refuse(&mut out, 403, "Forbidden", b"403 forbidden host");
+    }
+
+    // (2) Content-Length 上限：只读服务不需要 body，超过 4 KiB 直接 413，
+    // 并且不去读 body（避免拿超大 Content-Length 逼服务端分配内存）。
+    if content_length > MAX_CONTENT_LENGTH {
+        return refuse(&mut out, 413, "Payload Too Large", b"413 payload too large");
     }
     // 丢弃 body（PROPFIND 的 prop 请求体可忽略）
     if content_length > 0 {
@@ -326,8 +437,11 @@ fn handle_conn(stream: TcpStream, vfs: &VirtualFS) -> std::io::Result<()> {
         reader.read_exact(&mut body)?;
     }
 
-    let vpath = normalize_path(&raw_path);
-    let mut out = stream;
+    // (3) token 校验 + 路径安全检查（`..` / NUL）。失败一律 403。
+    let Some(vpath) = resolve_target(&raw_path, token) else {
+        return refuse(&mut out, 403, "Forbidden", b"403 forbidden");
+    };
+
     match method.as_str() {
         "OPTIONS" => {
             write_resp(
@@ -340,15 +454,21 @@ fn handle_conn(stream: TcpStream, vfs: &VirtualFS) -> std::io::Result<()> {
             )?;
         }
         "PROPFIND" => {
-            let xml = multistatus_xml(vfs, &vpath);
-            write_resp(
-                &mut out,
-                207,
-                "Multi-Status",
-                &[("Content-Type", "application/xml; charset=\"utf-8\"")],
-                xml.len(),
-                xml.as_bytes(),
-            )?;
+            // 路径不存在时必须是 404，而不是一个空的 207：
+            // 否则客户端会把「不存在」当成「空集合」。
+            if !vfs_exists(vfs, &vpath) {
+                write_resp(&mut out, 404, "Not Found", &[], 0, b"")?;
+            } else {
+                let xml = multistatus_xml(vfs, &vpath, &format!("/{}", token));
+                write_resp(
+                    &mut out,
+                    207,
+                    "Multi-Status",
+                    &[("Content-Type", "application/xml; charset=\"utf-8\"")],
+                    xml.len(),
+                    xml.as_bytes(),
+                )?;
+            }
         }
         "GET" | "HEAD" => match vfs.read_file(&vpath) {
             Ok(data) => {
@@ -370,6 +490,100 @@ fn handle_conn(stream: TcpStream, vfs: &VirtualFS) -> std::io::Result<()> {
     out.flush()?;
     let _ = out.shutdown(Shutdown::Both);
     Ok(())
+}
+
+/// 写一条短拒绝响应并关闭连接
+fn refuse(stream: &mut TcpStream, code: u16, msg: &str, body: &[u8]) -> std::io::Result<()> {
+    write_resp(
+        stream,
+        code,
+        msg,
+        &[("Content-Type", "text/plain; charset=\"utf-8\"")],
+        body.len(),
+        body,
+    )?;
+    stream.flush()?;
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+/// Host 头是否被接受：只允许 `127.0.0.1:<本服务端口>` 与 `localhost:<本服务端口>`
+/// （主机名大小写不敏感，端口必须显式且等于本服务端口）。
+///
+/// 为什么这样就能杀掉 DNS rebinding：浏览器发请求时 Host 由 URL 的主机名决定，
+/// 攻击者无法把它改成 `127.0.0.1:<端口>`。被 rebinding 的页面无论把域名解析到
+/// 哪里，请求里的 Host 仍是攻击者域名，于是这里直接 403，读不到任何明文。
+fn host_is_allowed(host: Option<&str>, port: u16) -> bool {
+    let Some(h) = host else { return false };
+    let h = h.trim();
+    // IPv6 字面量（`[::1]:port`）不支持：服务只绑 IPv4 回环
+    let (name, port_part) = match h.rsplit_once(':') {
+        Some((n, p)) => (n, Some(p)),
+        None => (h, None),
+    };
+    if !(name.eq_ignore_ascii_case("127.0.0.1") || name.eq_ignore_ascii_case("localhost")) {
+        return false;
+    }
+    // 必须带端口，且等于本服务端口（HTTP/1.1 下非默认端口一定出现在 Host 里）
+    match port_part {
+        Some(p) => p == port.to_string(),
+        None => false,
+    }
+}
+
+/// 近似常数时间的字符串比较：逐字节异或后累加，不提前 return。
+///
+/// 用于 token 校验，避免按前缀逐字符比较时通过响应耗时还原 token。
+/// （长度不同会走 `len` 分支提前返回，只泄露长度——token 长度固定为 32，
+/// 不构成有效信息。）
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    if x.len() != y.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (a, b) in x.iter().zip(y.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+/// 请求路径 → VirtualFS 路径：校验并剥离 token 前缀。
+///
+/// 返回 `None` 表示应拒绝（403）：
+/// - 路径含 NUL 字节（原样或百分号编码后）；
+/// - 路径含 `..` 段或 `\..\`（显式拒绝穿越，不依赖 VFS 恰好没有这种键——
+///   那是巧合而非设计）；
+/// - 第一段与 token 不相等（近似常数时间比较）。
+fn resolve_target(raw: &str, token: &str) -> Option<String> {
+    if raw.contains('\0') {
+        return None;
+    }
+    // normalize_path 会去查询串、百分号解码、去首尾 `/`
+    let p = normalize_path(raw);
+    if p.contains('\0') {
+        return None;
+    }
+    // 解码之后再查 `..`，这样 `%2e%2e` 也逃不掉
+    if p.split(['/', '\\']).any(|seg| seg == "..") {
+        return None;
+    }
+    let (first, tail) = match p.split_once('/') {
+        Some((a, b)) => (a, b),
+        None => (p.as_str(), ""),
+    };
+    if !ct_eq(first, token) {
+        return None;
+    }
+    Some(tail.to_string())
+}
+
+/// 路径在 VFS 里是否存在（文件或目录）。
+///
+/// 根路径恒存在；目录的判定用 `list_dir` 非空——VFS 由文件列表构建，
+/// 非根目录至少含一个条目，因此不会把「空目录」误判为不存在。
+fn vfs_exists(vfs: &VirtualFS, path: &str) -> bool {
+    path.is_empty() || vfs.read_file(path).is_ok() || !vfs.list_dir(path).is_empty()
 }
 
 fn write_resp(
@@ -402,14 +616,20 @@ fn normalize_path(raw: &str) -> String {
     p.trim_start_matches('/').trim_end_matches('/').to_string()
 }
 
+/// 百分号解码。
+///
+/// 按**字节**处理而非 `&s[i + 1..i + 3]`：后者在多字节 UTF-8 字符上可能切到
+/// 非字符边界而 panic（例如 `/%é` 会让服务线程 panic），属于解析器加固的一部分。
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
                 i += 3;
                 continue;
             }
@@ -428,7 +648,10 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// 生成 WebDAV Multi-Status（自身 + 子项）
-fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
+///
+/// `prefix` 是本次挂载的 token 前缀（形如 `/abcd...`）。href 必须带上它，
+/// 否则 WebClient 会按相对路径去请求 `/readme.txt` 这类没有 token 的地址并被 403。
+fn multistatus_xml(vfs: &VirtualFS, path: &str, prefix: &str) -> String {
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n",
     );
@@ -438,7 +661,7 @@ fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or("").to_string();
     push_response(
         &mut xml,
-        path,
+        &href_for(prefix, path),
         &name,
         self_is_file,
         self_data.map(|d| d.len()).unwrap_or(0),
@@ -446,7 +669,13 @@ fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
 
     if !self_is_file {
         for e in vfs.list_dir(path) {
-            push_response(&mut xml, &e.path, &e.name, !e.is_dir, e.size);
+            push_response(
+                &mut xml,
+                &href_for(prefix, &e.path),
+                &e.name,
+                !e.is_dir,
+                e.size,
+            );
         }
     }
 
@@ -454,9 +683,18 @@ fn multistatus_xml(vfs: &VirtualFS, path: &str) -> String {
     xml
 }
 
+/// VFS 路径 → 带 token 前缀的 href
+fn href_for(prefix: &str, path: &str) -> String {
+    if path.is_empty() {
+        format!("{}/", prefix)
+    } else {
+        format!("{}/{}", prefix, path)
+    }
+}
+
 fn push_response(xml: &mut String, href: &str, name: &str, is_file: bool, size: usize) {
     xml.push_str("<D:response>\n");
-    xml.push_str(&format!("<D:href>/{}</D:href>\n", xml_escape(href)));
+    xml.push_str(&format!("<D:href>{}</D:href>\n", xml_escape(href)));
     xml.push_str("<D:propstat>\n<D:prop>\n");
     xml.push_str(&format!(
         "<D:displayname>{}</D:displayname>\n",
@@ -485,62 +723,349 @@ mod tests {
         ]))
     }
 
-    fn http(port: u16, method: &str, path: &str) -> (u16, String) {
-        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let req = format!(
-            "{} {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            method, path
-        );
-        s.write_all(req.as_bytes()).unwrap();
-        let mut resp = String::new();
-        s.read_to_string(&mut resp).unwrap();
-        let status = resp
-            .split_whitespace()
+    /// 测试用服务端：起服务并记住端口/token，测试结束调 `shutdown`。
+    struct TestServer {
+        port: u16,
+        token: String,
+        stop: Arc<AtomicBool>,
+        join: JoinHandle<()>,
+    }
+
+    impl TestServer {
+        fn start() -> Self {
+            let (port, token, stop, join) = start_webdav(sample_vfs()).unwrap();
+            Self {
+                port,
+                token,
+                stop,
+                join,
+            }
+        }
+
+        /// 带 token 的合法路径
+        fn path(&self, p: &str) -> String {
+            format!("/{}/{}", self.token, p.trim_start_matches('/'))
+        }
+
+        /// 原样发送一段请求，返回完整响应文本
+        fn raw(&self, request: &str) -> String {
+            let mut s = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+            s.write_all(request.as_bytes()).unwrap();
+            let _ = s.shutdown(Shutdown::Write);
+            let mut resp = String::new();
+            let _ = s.read_to_string(&mut resp);
+            resp
+        }
+
+        /// 用合法 Host 发请求
+        fn call(&self, method: &str, path: &str) -> (u16, String) {
+            let host = format!("127.0.0.1:{}", self.port);
+            self.call_host(method, path, &host)
+        }
+
+        /// 指定 Host 发请求
+        fn call_host(&self, method: &str, path: &str, host: &str) -> (u16, String) {
+            let req = format!(
+                "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                method, path, host
+            );
+            let resp = self.raw(&req);
+            (status_of(&resp), body_of(&resp))
+        }
+
+        fn shutdown(self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = self.join.join();
+        }
+    }
+
+    fn status_of(resp: &str) -> u16 {
+        resp.split_whitespace()
             .nth(1)
             .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        let body = resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-        (status, body)
+            .unwrap_or(0)
+    }
+
+    fn body_of(resp: &str) -> String {
+        resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
     }
 
     #[test]
     fn webdav_get_file() {
-        let (port, stop, h) = start_webdav(sample_vfs()).unwrap();
-        let (status, body) = http(port, "GET", "/readme.txt");
-        stop.store(true, Ordering::SeqCst);
-        let _ = h.join();
+        let srv = TestServer::start();
+        let (status, body) = srv.call("GET", &srv.path("readme.txt"));
+        srv.shutdown();
         assert_eq!(status, 200);
         assert_eq!(body, "Hello VFS");
     }
 
     #[test]
     fn webdav_get_missing_is_404() {
-        let (port, stop, h) = start_webdav(sample_vfs()).unwrap();
-        let (status, _) = http(port, "GET", "/nope.txt");
-        stop.store(true, Ordering::SeqCst);
-        let _ = h.join();
+        let srv = TestServer::start();
+        let (status, _) = srv.call("GET", &srv.path("nope.txt"));
+        srv.shutdown();
         assert_eq!(status, 404);
     }
 
     #[test]
     fn webdav_propfind_root_lists_entries() {
-        let (port, stop, h) = start_webdav(sample_vfs()).unwrap();
-        let (status, body) = http(port, "PROPFIND", "/");
-        stop.store(true, Ordering::SeqCst);
-        let _ = h.join();
+        let srv = TestServer::start();
+        let (status, body) = srv.call("PROPFIND", &srv.path(""));
+        srv.shutdown();
         assert_eq!(status, 207);
         assert!(body.contains("readme.txt"), "根应含 readme.txt: {}", body);
         assert!(body.contains("src"), "根应含 src: {}", body);
         assert!(body.contains("<D:collection/>"), "src 是目录: {}", body);
     }
 
+    /// href 必须带 token 前缀，否则 WebClient 会去请求无 token 的地址
+    #[test]
+    fn webdav_propfind_hrefs_carry_token() {
+        let srv = TestServer::start();
+        let (status, body) = srv.call("PROPFIND", &srv.path(""));
+        let token = srv.token.clone();
+        srv.shutdown();
+        assert_eq!(status, 207);
+        assert!(
+            body.contains(&format!("<D:href>/{}/readme.txt</D:href>", token)),
+            "href 应含 token 前缀: {}",
+            body
+        );
+    }
+
     #[test]
     fn webdav_options_has_dav_header() {
-        let (port, stop, h) = start_webdav(sample_vfs()).unwrap();
-        let (status, _) = http(port, "OPTIONS", "/");
-        stop.store(true, Ordering::SeqCst);
-        let _ = h.join();
+        let srv = TestServer::start();
+        let (status, _) = srv.call("OPTIONS", &srv.path(""));
+        srv.shutdown();
         assert_eq!(status, 200);
+    }
+
+    // ===== 访问控制 =====
+
+    /// 不带 token 的请求必须被拒（旧的 `http://127.0.0.1:port/readme.txt` 现在应当失败）
+    #[test]
+    fn webdav_rejects_missing_token() {
+        let srv = TestServer::start();
+        let (status, _) = srv.call("GET", "/readme.txt");
+        let (propfind_status, _) = srv.call("PROPFIND", "/");
+        let (options_status, _) = srv.call("OPTIONS", "/");
+        srv.shutdown();
+        assert_eq!(status, 403, "无 token 的 GET 必须 403");
+        assert_eq!(propfind_status, 403, "无 token 的 PROPFIND 必须 403");
+        assert_eq!(options_status, 403, "无 token 的 OPTIONS 必须 403");
+    }
+
+    /// 错误 token（含只差一位、以及 token 前缀）必须被拒
+    #[test]
+    fn webdav_rejects_wrong_token() {
+        let srv = TestServer::start();
+        let (status, _) = srv.call("GET", "/00000000000000000000000000000000/readme.txt");
+        let (prefix_status, _) = srv.call(
+            "GET",
+            &format!("/{}/readme.txt", &srv.token[..srv.token.len() - 1]),
+        );
+        let (upper_status, _) =
+            srv.call("GET", &format!("/{}/readme.txt", srv.token.to_uppercase()));
+        srv.shutdown();
+        assert_eq!(status, 403, "错误 token 必须 403");
+        assert_eq!(prefix_status, 403, "token 前缀（少一位）必须 403");
+        assert_eq!(upper_status, 403, "大小写不同的 token 必须 403");
+    }
+
+    /// Host 不是 127.0.0.1:<端口>/localhost:<端口>：即使 token 正确也拒绝。
+    /// 这就是防 DNS rebinding 的那一步。
+    #[test]
+    fn webdav_rejects_foreign_host() {
+        let srv = TestServer::start();
+        let path = srv.path("readme.txt");
+        let (evil, _) = srv.call_host("GET", &path, &format!("evil.example.com:{}", srv.port));
+        let (rebound, _) = srv.call_host("GET", &path, &format!("attacker.test:{}", srv.port));
+        let (wrong_port, _) = srv.call_host("GET", &path, "127.0.0.1:1");
+        let (no_port, _) = srv.call_host("GET", &path, "127.0.0.1");
+        let (lookalike, _) =
+            srv.call_host("GET", &path, &format!("127.0.0.1.evil.com:{}", srv.port));
+        srv.shutdown();
+        assert_eq!(evil, 403, "外部域名 Host 必须 403");
+        assert_eq!(rebound, 403, "DNS rebinding 的域名 Host 必须 403");
+        assert_eq!(wrong_port, 403, "端口不符的 Host 必须 403");
+        assert_eq!(no_port, 403, "缺少端口的 Host 必须 403");
+        assert_eq!(lookalike, 403, "形似回环的域名 Host 必须 403");
+    }
+
+    /// localhost:<端口> 是允许的（Windows 客户端可能这样发）
+    #[test]
+    fn webdav_accepts_localhost_host() {
+        let srv = TestServer::start();
+        let (status, body) = srv.call_host(
+            "GET",
+            &srv.path("readme.txt"),
+            &format!("localhost:{}", srv.port),
+        );
+        srv.shutdown();
+        assert_eq!(status, 200);
+        assert_eq!(body, "Hello VFS");
+    }
+
+    /// 不带 Host 头的请求一律拒绝
+    #[test]
+    fn webdav_rejects_missing_host_header() {
+        let srv = TestServer::start();
+        let req = format!(
+            "GET {} HTTP/1.1\r\nConnection: close\r\n\r\n",
+            srv.path("readme.txt")
+        );
+        let resp = srv.raw(&req);
+        srv.shutdown();
+        assert_eq!(status_of(&resp), 403, "无 Host 头必须 403");
+    }
+
+    // ===== 解析器加固 =====
+
+    /// `..` 段（原样与百分号编码）必须显式拒绝，不能靠 VFS 恰好没有这种键
+    #[test]
+    fn webdav_rejects_dotdot_path() {
+        let srv = TestServer::start();
+        let (plain, _) = srv.call("GET", &format!("/{}/../readme.txt", srv.token));
+        let (encoded, _) = srv.call("GET", &format!("/{}/%2e%2e/readme.txt", srv.token));
+        let (embedded, _) = srv.call("GET", &format!("/{}/src/../../readme.txt", srv.token));
+        let (trailing, _) = srv.call("GET", &format!("/{}/src/..", srv.token));
+        srv.shutdown();
+        assert_eq!(plain, 403, "`..` 段必须 403");
+        assert_eq!(encoded, 403, "`%2e%2e` 也必须 403");
+        assert_eq!(embedded, 403, "中间夹 `..` 也必须 403");
+        assert_eq!(trailing, 403, "结尾 `..` 也必须 403");
+    }
+
+    /// NUL 字节（原样与百分号编码）必须拒绝
+    #[test]
+    fn webdav_rejects_nul_byte_path() {
+        let srv = TestServer::start();
+        let (encoded, _) = srv.call("GET", &format!("/{}/a%00b", srv.token));
+        let raw_req = format!(
+            "GET /{}/a\0b HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            srv.token, srv.port
+        );
+        let resp = srv.raw(&raw_req);
+        srv.shutdown();
+        assert_eq!(encoded, 403, "编码后的 NUL 必须 403");
+        assert_eq!(status_of(&resp), 403, "原样 NUL 必须 403");
+    }
+
+    /// 超大 Content-Length 直接 413（只读服务不接收 body）
+    #[test]
+    fn webdav_rejects_oversized_content_length() {
+        let srv = TestServer::start();
+        let req = format!(
+            "PROPFIND {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            srv.path(""),
+            srv.port,
+            MAX_CONTENT_LENGTH + 1
+        );
+        let resp = srv.raw(&req);
+        srv.shutdown();
+        assert_eq!(status_of(&resp), 413, "超大 Content-Length 必须 413");
+    }
+
+    /// PROPFIND 不存在的路径返回 404，而不是空 207
+    #[test]
+    fn webdav_propfind_missing_is_404() {
+        let srv = TestServer::start();
+        let (status, _) = srv.call("PROPFIND", &srv.path("no/such/dir"));
+        srv.shutdown();
+        assert_eq!(status, 404);
+    }
+
+    // ===== token / 比较 / 路径规范化 =====
+
+    /// token 长度 32 个十六进制字符（128 位），且每次都不同
+    #[test]
+    fn random_token_is_long_hex_and_unique() {
+        let a = random_token();
+        let b = random_token();
+        assert_eq!(a.len(), 32, "token 应为 32 个十六进制字符: {}", a);
+        assert!(
+            a.chars().all(|c| c.is_ascii_hexdigit()),
+            "token 应为十六进制: {}",
+            a
+        );
+        assert_ne!(a, b, "两次生成不应相同");
+    }
+
+    /// 每次挂载使用不同的 token
+    #[test]
+    fn each_mount_gets_a_fresh_token() {
+        let s1 = TestServer::start();
+        let s2 = TestServer::start();
+        let (t1, t2) = (s1.token.clone(), s2.token.clone());
+        let (p1, p2) = (s1.port, s2.port);
+        s1.shutdown();
+        s2.shutdown();
+        assert_eq!(t1.len(), 32);
+        assert_ne!(t1, t2);
+        assert_ne!(p1, p2, "端口由系统分配，两次不应相同");
+    }
+
+    /// 用 A 服务的 token 访问 B 服务必须失败
+    #[test]
+    fn token_is_not_interchangeable_across_mounts() {
+        let s1 = TestServer::start();
+        let s2 = TestServer::start();
+        let (status, _) = s2.call("GET", &format!("/{}/readme.txt", s1.token));
+        let t1 = s1.token.clone();
+        s1.shutdown();
+        s2.shutdown();
+        assert_eq!(status, 403, "别的挂载的 token 不应被接受（{}）", t1);
+    }
+
+    #[test]
+    fn ct_eq_matches_only_identical_strings() {
+        assert!(ct_eq("abc123", "abc123"));
+        assert!(!ct_eq("abc123", "abc124"));
+        assert!(!ct_eq("abc123", "abc12"));
+        assert!(!ct_eq("", "a"));
+        assert!(ct_eq("", ""));
+    }
+
+    #[test]
+    fn host_is_allowed_only_loopback_with_service_port() {
+        assert!(host_is_allowed(Some("127.0.0.1:8080"), 8080));
+        assert!(host_is_allowed(Some("localhost:8080"), 8080));
+        assert!(host_is_allowed(Some("LOCALHOST:8080"), 8080));
+        assert!(!host_is_allowed(None, 8080));
+        assert!(!host_is_allowed(Some("evil.com:8080"), 8080));
+        assert!(!host_is_allowed(Some("127.0.0.1:9090"), 8080));
+        assert!(!host_is_allowed(Some("127.0.0.1"), 8080));
+        assert!(!host_is_allowed(Some("localhost"), 8080));
+        assert!(!host_is_allowed(Some("[::1]:8080"), 8080));
+        assert!(!host_is_allowed(Some("127.0.0.1.evil.com:8080"), 8080));
+    }
+
+    #[test]
+    fn resolve_target_requires_token_and_rejects_traversal() {
+        let token = "deadbeefdeadbeefdeadbeefdeadbeef";
+        assert_eq!(
+            resolve_target(&format!("/{}/readme.txt", token), token).as_deref(),
+            Some("readme.txt")
+        );
+        assert_eq!(
+            resolve_target(&format!("/{}/", token), token).as_deref(),
+            Some("")
+        );
+        assert_eq!(resolve_target("/readme.txt", token), None);
+        assert_eq!(resolve_target(&format!("/{}/../x", token), token), None);
+        assert_eq!(resolve_target(&format!("/{}/%2e%2e/x", token), token), None);
+        assert_eq!(resolve_target(&format!("/{}/a%00b", token), token), None);
+        assert_eq!(resolve_target(&format!("/{}/x\0y", token), token), None);
+    }
+
+    /// 多字节 UTF-8 紧跟 `%` 不能让解析 panic（旧实现会切到非字符边界）
+    #[test]
+    fn percent_decode_does_not_panic_on_multibyte() {
+        let _ = percent_decode("/%é");
+        let _ = percent_decode("%é%");
+        assert_eq!(percent_decode("/a%20b.txt"), "/a b.txt");
+        assert_eq!(percent_decode("/%2e%2e"), "/..");
     }
 
     #[test]
@@ -625,11 +1150,29 @@ mod tests {
         let h = MountHandle {
             stop: Arc::new(AtomicBool::new(false)),
             port: 0,
+            token: "unused".to_string(),
             drive: "~~:".to_string(),
             mapped: false,
             server: None,
         };
         unmount(h);
+    }
+
+    /// `url()` 必须带上 token（否则调用方拿到的地址会被服务自己 403）
+    #[test]
+    fn mount_handle_url_contains_token() {
+        let h = MountHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            port: 41234,
+            token: "0123456789abcdef0123456789abcdef".to_string(),
+            drive: String::new(),
+            mapped: false,
+            server: None,
+        };
+        assert_eq!(
+            h.url(),
+            "http://127.0.0.1:41234/0123456789abcdef0123456789abcdef/"
+        );
     }
 
     #[test]
