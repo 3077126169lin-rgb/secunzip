@@ -2,7 +2,7 @@
 
 本文件记录 SecUnzip 各版本的变更。格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## 未发布
+## 0.1.3 - 2026-09-28
 
 ### 新增
 
