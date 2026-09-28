@@ -373,7 +373,7 @@ async fn grant_user(State(db): State<Db>, Json(req): Json<GrantRequest>) -> Json
         return err("密钥错误");
     }
     let now = chrono::Utc::now().format("%Y%m%d").to_string();
-    let expires = req.expires_at.as_deref().map(parse_expire).flatten();
+    let expires = req.expires_at.as_deref().and_then(parse_expire);
     sqlx::query("INSERT OR REPLACE INTO grants (app_id, user_id, granted_at, expires_at) VALUES (?, ?, ?, ?)")
         .bind(&req.app_id)
         .bind(&req.user_id)
@@ -621,8 +621,7 @@ async fn approve_request(
     let expires = req
         .expires_at
         .as_deref()
-        .map(parse_expire)
-        .flatten()
+        .and_then(parse_expire)
         .or_else(|| need_days.map(|d| days_from_now(d as i64)));
 
     let now = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
